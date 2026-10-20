@@ -4,9 +4,9 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0 and Step 1.1 are Verified; G0 passed. Step 1.2, G1, and all Phase 2–3 work remain Pending. The new package is a tested policy foundation, not a loadable research extension yet.
-- Acceptance or release still pending: Full feature acceptance, bounded handoff, native-runtime integration checks, and approval-required live/TUI checks. Step 1.1's scoped checks are recorded below. Publication and permanent installation are not part of this plan.
-- Blockers: No unresolved product decisions or Step 1.1 blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
+- Delivery state: In progress. Phase 0 and both Phase 1 steps are Verified; G0 and G1 passed. All Phase 2–3 work remains Pending. The package is a tested policy/report foundation, not a loadable research extension yet.
+- Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
+- Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
 Step statuses below are the authoritative execution record. A phase is complete only when its step completion gates and phase exit gate are satisfied. Checkboxes indicate completed tasks, not passed gates. Verified means the scoped gate and implementation review passed; it does not mean live acceptance, user approval, installation, or release. In supervised execution, record manual approvals in extension state, not task checkboxes.
 
@@ -142,7 +142,7 @@ Evidence: From `.`, `npm run typecheck` and `node --import tsx --test test/confi
 
 ### Step 1.2 — Implement the capped report/diagnostic handoff
 
-Status: Pending
+Status: Verified
 Requirements / acceptance: R6, R9, R11, R12; AC9 (full helper portion), AC8/AC13 (formatting portions). Native final-message selection and integrated overflow are owned by Steps 2.2 and 3.1.
 Depends on: Step 1.1.
 Review boundary: deterministic byte-bounded handoff and private overflow artifacts; no model-driven summarization or transcript retention.
@@ -154,11 +154,11 @@ Expected files:
 
 Tasks:
 
-- [ ] Return ordinary reports unchanged under the 12 KiB text budget; apply the same budget to terminal diagnostics and all profile results.
-- [ ] For overflow, reserve space for a truthful clipping notice and absolute path, preserve complete final report text in private scratch storage outside the repository, and keep it separate from ephemeral session cleanup.
-- [ ] Handle multibyte text, exact boundaries, path/notice overhead, and failed artifact writes without falsely promising preservation or treating clipping as synthesis.
-- [ ] Keep only final report artifacts and bounded rendering metadata; exclude raw child/tool/reasoning transcripts from parent details and scratch output.
-- [ ] Test repository/home noninterference, private permissions, retention after simulated child cleanup, and storage failure using temporary directories and injected filesystem errors.
+- [x] Return ordinary reports unchanged under the 12 KiB text budget; apply the same budget to terminal diagnostics and all profile results.
+- [x] For overflow, reserve space for a truthful clipping notice and absolute path, preserve complete final report text in private scratch storage outside the repository, and keep it separate from ephemeral session cleanup.
+- [x] Handle multibyte text, exact boundaries, path/notice overhead, and failed artifact writes without falsely promising preservation or treating clipping as synthesis.
+- [x] Keep only final report artifacts and bounded rendering metadata; exclude raw child/tool/reasoning transcripts from parent details and scratch output.
+- [x] Test repository/home noninterference, private permissions, retention after simulated child cleanup, and storage failure using temporary directories and injected filesystem errors.
 
 Verification:
 
@@ -166,10 +166,10 @@ Verification:
 - Manual: Not needed for this helper scope; integrated parent readability is checked in Step 3.2.
 
 Completion gate: boundary/failure tests pass, retained reports survive only the intended cleanup boundary, and no future runner is needed to demonstrate helper correctness.
-Evidence: Not run.
+Evidence: `node --import tsx --test test/report.test.ts` passed all 17 focused tests, followed by a passing `npm run typecheck`; source review confirmed private exclusive file creation and final-report-only metadata. Tests cover 12 KiB byte boundaries, multibyte text/paths, canonical workspace exclusion, retained reports after simulated child cleanup, unchanged fixture repo/home files, partial writes, permission/storage/cleanup failures, and bounded truthful diagnostics. The future host must supply the repository/workspace root and selected final text; actual SDK lifecycle and model-facing integration are not yet verified.
 
 Phase exit gate **G1**: after Step 1.2 checks, run `npm run typecheck` and `npm test` over the existing foundation tests. Review the config/profile/report contracts together: no automatic configuration writes, no default research deadline, no broad tool grants, and no transcript persistence. This does not establish a runnable extension yet.
-Evidence: Not run.
+Evidence: Passed `npm run typecheck` and the full `npm test` suite (46 tests), after the focused Step 1.2 checks. Reviewed the policy/profile/report composition: settings are read-only, timeout remains disabled by default, tools stay fixed, and the handoff helper retains only final report text with a bounded excerpt/path. No runtime session, live backend, user configuration, dependency, or installation changes were needed; G2/G3 remain Pending.
 
 ## Phase 2 — Native Ketch and isolated execution
 
