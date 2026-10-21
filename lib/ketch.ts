@@ -56,11 +56,6 @@ export function validateParentKetchTransport(
   projectTrusted: boolean,
 ): string | undefined {
   const expected = transportFingerprint(createKetchServerConfig("codemode"));
-  const registered = view.getMcpServers().find((server) => server.name === KETCH_SERVER);
-  if (registered && transportFingerprint(registered.config) !== expected) {
-    return "Ketch backend configuration differs from the delegated researcher: align the registered ketch command/arguments/environment/working directory with plain `ketch mcp serve`, or remove the conflicting registration. Configuration was not changed.";
-  }
-
   let global: Record<string, unknown> = {};
   let project: Record<string, unknown> = {};
   const read = (path: string): Record<string, unknown> | undefined => {
@@ -99,16 +94,26 @@ export function validateParentKetchTransport(
       ? projectEntry
       : { ...(globalEntry as Record<string, unknown>), ...(projectEntry as Record<string, unknown>) };
   }
-  if (configured === undefined) return undefined;
-  if (!configured || typeof configured !== "object" || Array.isArray(configured)) {
-    return "Ketch has an invalid configured server entry; delegated research is disabled until it is corrected. Configuration was not changed.";
+  const fileConfigured = Object.hasOwn(global, KETCH_SERVER) || Object.hasOwn(project, KETCH_SERVER);
+  if (fileConfigured) {
+    if (configured === undefined || !configured || typeof configured !== "object" || Array.isArray(configured)) {
+      return "Ketch has an invalid configured server entry; delegated research is disabled until it is corrected. Configuration was not changed.";
+    }
+    const effective = configured as Record<string, unknown>;
+    if (typeof effective.command === "string") {
+      const candidate = effective as unknown as McpServerConfig;
+      if (transportFingerprint(candidate) === expected) return undefined;
+    }
+    return "Ketch backend configuration differs from the delegated researcher: align the configured ketch command/arguments/environment/working directory with plain `ketch mcp serve`, or remove the conflicting override. Configuration was not changed.";
   }
-  const effective = configured as Record<string, unknown>;
-  if (typeof effective.command === "string") {
-    const candidate = effective as unknown as McpServerConfig;
-    if (transportFingerprint(candidate) === expected) return undefined;
+
+  // Native Pi gives an applicable file entry precedence over extension registrations. Only
+  // validate a registered server when no global/trusted-project file entry can override it.
+  const registered = view.getMcpServers().find((server) => server.name === KETCH_SERVER);
+  if (registered && transportFingerprint(registered.config) !== expected) {
+    return "Ketch backend configuration differs from the delegated researcher: align the registered ketch command/arguments/environment/working directory with plain `ketch mcp serve`, or remove the conflicting registration. Configuration was not changed.";
   }
-  return "Ketch backend configuration differs from the delegated researcher: align the configured ketch command/arguments/environment/working directory with plain `ketch mcp serve`, or remove the conflicting override. Configuration was not changed.";
+  return undefined;
 }
 
 // Never reads mcp.json or copies a parent's registered-server list for the child itself.

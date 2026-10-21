@@ -76,6 +76,9 @@ test("project Ketch transport replaces global configuration while metadata overr
   const view = { getMcpServers: () => [{ name: "ketch", config: createKetchServerConfig("codemode") }] };
   assert.match(validateParentKetchTransport(view, root, agentDir, true) ?? "", /differs from the delegated researcher/);
   writeFileSync(join(root, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { ketch: { description: "project label" } } }));
+  assert.equal(validateParentKetchTransport({
+    getMcpServers: () => [{ name: "ketch", config: { command: "extension-ketch", env: { HOME: "/wrong" } } }],
+  }, root, agentDir, true), undefined);
   assert.equal(validateParentKetchTransport(view, root, agentDir, true), undefined);
   rmSync(root, { recursive: true, force: true });
 });
