@@ -4,7 +4,7 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0, Phase 1, and Steps 2.1–2.2 are Verified; G0 and G1 passed. Steps 2.3–3.2 and G2/G3 remain Pending. The entry point provides Ketch MCP integration only; the tested child adapter is not registered as delegation yet.
+- Delivery state: In progress. Phase 0, Phase 1, Steps 2.1–2.3, and G0–G2 are Verified for their deterministic/native scopes. Steps 3.1–3.2 and G3 remain Pending. The entry point provides Ketch MCP integration only; the tested child adapter/runner is not registered as delegation yet.
 - Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
 - Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
@@ -237,11 +237,11 @@ Verification:
 - Manual: Review the isolated session's loader/settings inputs and emitted model context in fixtures. A scripted provider/session proves plumbing, not that a real model will always cite accurately or resist injection; live review stays pending.
 
 Completion gate: the adapter runs correctly against completed prerequisites, native isolation tests pass, and successful/error/recovery fixtures cannot leak interim transcript content or silently choose another model. Baseline cleanup must already work; lifecycle race hardening is not an excuse to leak until Step 2.3.
-Evidence: Final `npm run check` passed typecheck, 77 unit tests, and 22 native integration tests (99 total, no skips), including 17 session tests, 4 Scout prerequisite tests, and 13 native isolation tests added here. Native setup/streams verified suppression across reload, literal/large tasks, exact tools, native search execution, missing-binary startup/per-call denial, clamping/overrides, retry settlement, read-only auth/cache behavior, responsive MCP PID exit, and unchanged fixture repo/agent/parent data; unit fixtures verified terminal/compaction/omission logic, usage, bounded handoff/overflow, and cleanup failures. [step-2.2.md](evidence/step-2.2.md) records the public stream-injection seam, read-only credential/config resolver, native auto-download guard, cache-layout sensitivity, and proof limits. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred. Shared queue/deadline/shutdown ownership, hostile lifecycle proof, and G2/G3 remain Pending.
+Evidence: Final `npm run check` passed typecheck, 77 unit tests, and 22 native integration tests (99 total, no skips), including 17 session tests, 4 Scout prerequisite tests, and 13 native isolation tests added here. Native setup/streams verified suppression across reload, literal/large tasks, exact tools, native search execution, missing-binary startup/per-call denial, clamping/overrides, retry settlement, read-only auth/cache behavior, responsive MCP PID exit, and unchanged fixture repo/agent/parent data; unit fixtures verified terminal/compaction/omission logic, usage, bounded handoff/overflow, and cleanup failures. [step-2.2.md](evidence/step-2.2.md) records the public stream-injection seam, read-only credential/config resolver, native auto-download guard, cache-layout sensitivity, and proof limits. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred. Shared queue/deadline/shutdown ownership and hostile lifecycle proof were completed in Step 2.3; G3 and live acceptance remain pending.
 
 ### Step 2.3 — Add shared queue, cancellation, optional timeout, and shutdown ownership
 
-Status: Pending
+Status: Verified
 Requirements / acceptance: R7–R11; AC10, AC11, AC12 (automated portions), AC15/AC16 (lifecycle portions). Final parent-tool/TUI observations remain in Steps 3.1–3.2.
 Depends on: Step 2.2.
 Review boundary: invocation scheduling and resource ownership, including hostile cancellation timing; no new research features or budgets.
@@ -255,11 +255,11 @@ Expected files:
 
 Tasks:
 
-- [ ] Implement a cancellation-aware shared capacity limit; queued calls consume no child resources. Recheck cancellation when granting a slot, release exactly once on all paths, and keep sibling state independent.
-- [ ] Allocate a wall-clock deadline only for configured `timeoutMs`, starting at child startup rather than queue entry. With no configuration, allocate no research-deadline timer and impose no call/turn budget.
-- [ ] Distinguish cancelled, timed-out, failed, and completed outcomes. Abort startup/readiness/running work, close child-owned MCP connections using native shutdown, dispose the child, and remove timers/listeners without invoking the parent's abort/shutdown actions.
-- [ ] Track active invocations for parent session shutdown/reload; ensure no queued work starts afterward. Use bounded native process teardown/escalation rather than treating a sent signal or `dispose()` call as evidence a process exited.
-- [ ] Test queued cancellation versus slot release, already-aborted signals, overlapping completion/abort/timeout, startup rejection, default unlimited-call behavior, and an unresponsive fake stdio MCP server. Confirm overflow artifacts survive cleanup while the parent connection and unrelated sibling remain usable.
+- [x] Implement a cancellation-aware shared capacity limit; queued calls consume no child resources. Recheck cancellation when granting a slot, release exactly once on all paths, and keep sibling state independent.
+- [x] Allocate a wall-clock deadline only for configured `timeoutMs`, starting at child startup rather than queue entry. With no configuration, allocate no research-deadline timer and impose no call/turn budget.
+- [x] Distinguish cancelled, timed-out, failed, and completed outcomes. Abort startup/readiness/running work, close child-owned MCP connections using native shutdown, dispose the child, and remove timers/listeners without invoking the parent's abort/shutdown actions.
+- [x] Track active invocations for parent session shutdown/reload; ensure no queued work starts afterward. Use bounded native process teardown/escalation rather than treating a sent signal or `dispose()` call as evidence a process exited.
+- [x] Test queued cancellation versus slot release, already-aborted signals, overlapping completion/abort/timeout, startup rejection, default unlimited-call behavior, and an unresponsive fake stdio MCP server. Confirm overflow artifacts survive cleanup while the parent connection and unrelated sibling remain usable.
 
 Verification:
 
@@ -267,10 +267,10 @@ Verification:
 - Manual: Not required for scoped deterministic races; TUI cancellation is a separate live/manual gate. If native MCP cannot terminate the fake unresponsive process cleanly, stop G2 rather than waiving orphan prevention.
 
 Completion gate: queue/race and native process-lifetime assertions pass without hanging the test process, including success/failure/shutdown cleanup. Optional timeout remains off by default and does not become a hidden startup-to-completion budget.
-Evidence: Not run.
+Evidence: `npm run check` passed typecheck, 82 unit tests, and 24 native integration tests (106 total, no skips). [step-2.3.md](evidence/step-2.3.md) records the runner/status implementation, queue and timeout semantics, and native unresponsive-process proof. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
-Phase exit gate **G2**: after Step 2.3 checks, run `npm run check`. Review native isolation and lifecycle results together: only Ketch connects for researcher, no MCP connects for scout, no first prompt without tools, every terminal path releases capacity and owned resources, and no parent configuration/tool/model replacement occurs. Fix regressions before exposing `research` publicly. Record source/runtime proof limits and any platform limitation instead of calling mocked checks live acceptance.
-Evidence: Not run.
+Phase exit gate **G2**: Passed for the deterministic/native scope. `npm run check` and the combined review show only Ketch connects for researcher, scout has no MCP connection, no first prompt occurs before researcher capabilities are ready, and terminal paths release feature-owned capacity/resources. Parent and sibling noninterference remains covered by the preceding isolation fixtures; live backend/TUI acceptance remains Phase 3 work.
+Evidence: [step-2.3.md](evidence/step-2.3.md).
 
 ## Phase 3 — Delegation surface and acceptance
 

@@ -30,7 +30,7 @@ export interface ResearchSessionOptions {
   readonly onActivity?: (activity: SessionActivity) => void;
 }
 export interface SessionOutcome {
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: "completed" | "failed" | "cancelled" | "timed_out";
   readonly handoff: ReportHandoff;
   readonly activity: SessionActivity;
   readonly usage?: Usage;

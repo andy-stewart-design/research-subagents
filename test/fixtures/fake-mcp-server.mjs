@@ -13,6 +13,7 @@ function handle(request) {
     reply(id, { protocolVersion: "2024-11-05", capabilities: { tools: {}, resources: {} },
       serverInfo: { name: "fake-ketch", version: "test" }, instructions: "Controlled local fixture." });
   } else if (method === "tools/list") {
+    if (process.env.FAKE_MCP_UNRESPONSIVE === "1") return;
     setTimeout(() => reply(id, { tools: names.map((name) => ({
       name, description: "Fixture " + name,
       annotations: { readOnlyHint: name !== "tag", openWorldHint: true },
@@ -31,6 +32,7 @@ function handle(request) {
   } else if (method === "resources/templates/list") {
     reply(id, { resourceTemplates: [] });
   } else if (method === "tools/call") {
+    if (process.env.FAKE_MCP_HANG_CALL === "1") return;
     const args = params.arguments ?? {};
     if (process.env.FAKE_MCP_CALL_LOG) appendFileSync(process.env.FAKE_MCP_CALL_LOG,
       JSON.stringify({ name: params.name, args }) + "\n");
