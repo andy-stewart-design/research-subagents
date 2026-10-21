@@ -4,7 +4,7 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0 and both Phase 1 steps are Verified; G0 and G1 passed. All Phase 2–3 work remains Pending. The package is a tested policy/report foundation, not a loadable research extension yet.
+- Delivery state: In progress. Phase 0, Phase 1, and Step 2.1 are Verified; G0 and G1 passed. Steps 2.2–3.2 and G2/G3 remain Pending. The entry point provides Ketch MCP integration only; delegation is not registered yet.
 - Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
 - Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
@@ -179,7 +179,7 @@ Review boundary: parent Ketch entry point, child session adapter, and run owners
 
 ### Step 2.1 — Expose Ketch through native MCP and define isolated child loading
 
-Status: Pending
+Status: Verified
 Requirements / acceptance: R2–R4, R11, R12; AC3 (native MCP/resource policy portion), AC5/AC6 (fake MCP portions), AC16 (registration portion). Full child composition belongs to Step 2.2; live backend proof belongs to Step 3.2.
 Depends on: Step 1.2.
 Review boundary: a functional Ketch-only extension entry point plus child-only native MCP policy, not a custom retrieval implementation.
@@ -194,11 +194,11 @@ Expected files:
 
 Tasks:
 
-- [ ] Register the feature's default Ketch entry through `pi.registerMcpServer` without touching `mcp.json` or starting processes in the factory. Expose only search/scrape/code/docs through codemode in that default entry.
-- [ ] Build the researcher's explicit `createMcpExtension({ loadConfig, ... })` input: Ketch only; four direct tool overrides; all other tools hidden; no codemode/tool-search activation. Scout loads no MCP extension.
-- [ ] Define a cancellable, finite capability-startup check that runs before the first research prompt; distinguish startup/network failure from an optional deadline on research itself. Missing required tools must fail clearly, not merely log a lifecycle-hook error.
-- [ ] Respect native user-configured server precedence, surface incompatible overrides, and leave unrelated server registrations/active tools intact; make default Ketch configuration and child configuration share the intended CLI/backend behavior without copying unrelated server entries.
-- [ ] Exercise structured results and error prefixes/per-URL failures through native Pi wrappers with injected transports/fake stdio; verify direct parent calls need no research session.
+- [x] Register the feature's default Ketch entry through `pi.registerMcpServer` without touching `mcp.json` or starting processes in the factory. Expose only search/scrape/code/docs through codemode in that default entry.
+- [x] Build the researcher's explicit `createMcpExtension({ loadConfig, ... })` input: Ketch only; four direct tool overrides; all other tools hidden; no codemode/tool-search activation. Keep this factory researcher-only; scout's no-MCP session wiring remains in Step 2.2.
+- [x] Define a cancellable, finite capability-startup check that runs before the first research prompt; distinguish startup/network failure from an optional deadline on research itself. Missing required tools must fail clearly, not merely log a lifecycle-hook error.
+- [x] Respect native user-configured server precedence, surface incompatible overrides, and leave unrelated server registrations/active tools intact; make default Ketch configuration and child configuration share the intended CLI/backend behavior without copying unrelated server entries.
+- [x] Exercise structured results and error prefixes/per-URL failures through native Pi wrappers with injected transports/fake stdio; verify direct parent calls need no research session.
 
 Verification:
 
@@ -206,7 +206,7 @@ Verification:
 - Manual: No real Ketch backend use here. Inspect manifest/load-path and override diagnostics; actual Pi/Jiti loading and user-configured behavior are checked in Step 3.2.
 
 Completion gate: native MCP tests—not just mock registration assertions—prove the default exposure and startup/failure contract. Parent Ketch integration is a real usable capability at this review boundary.
-Evidence: Not run.
+Evidence: `npm run check` passed typecheck, 56 unit tests, and 9 native integration tests; source/manifest review confirmed Ketch-only registration and lifecycle-owned readiness checks. Actual codemode and native stdio/tool wrappers exercised controlled results, hidden-tool/resource exclusion, configured-entry precedence, missing/late tools, errors, and responsive process teardown; [step-2.1.md](evidence/step-2.1.md) records setup, proof limits, and the raw-input coercion detail carried into Step 3.1. No live Ketch/model requests, CLI/Jiti acceptance, permanent installation, or user configuration changes occurred; full child isolation and G2/G3 remain Pending.
 
 ### Step 2.2 — Run a fresh, strictly configured SDK child and select its final answer
 
@@ -292,7 +292,7 @@ Expected files:
 
 Tasks:
 
-- [ ] Register the strict `research({ agent, task })` schema and shared runner without model-controlled directory/tool/model overrides. Invalid direct/programmatic calls fail before session creation.
+- [ ] Register the strict `research({ agent, task })` schema and shared runner without model-controlled directory/tool/model overrides. Validate raw `research` input in a `tool_call` hook before Pi's native argument coercion, as well as at execution; invalid direct/programmatic calls fail before session creation. Preserve native coercion semantics for Ketch tools rather than adding a second MCP validator.
 - [ ] Capture dispatch plain data, propagate the tool signal, and send only bounded model-facing report/diagnostic content. Mark errors through the supported tool-result failure contract; keep status metadata separate from raw transcripts and include nested usage once when measured.
 - [ ] Render queued/running/terminal status, profile/task, elapsed time/tool activity, and expanded bounded report; never stream the child transcript or reasoning to parent context. Handle partial arguments, no TUI, narrow widths, and Unicode with library helpers.
 - [ ] Add guidance for autonomous multi-step delegation versus direct simple Ketch lookups and self-contained child tasks. Do not force routing or alter unrelated parent active tools/model/thinking.

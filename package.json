@@ -2,6 +2,9 @@
   "name": "pi-research-subagents",
   "version": "0.1.0",
   "private": true,
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
   "type": "module",
   "description": "Research-only Pi extension foundation targeting Pi 1.1.0 and Ketch v0.18.1.",
   "engines": {
@@ -21,6 +24,7 @@
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-mcp": "1.1.0",
     "@types/node": "24.19.2",
     "tsx": "4.23.15",
     "typebox": "1.3.27",
