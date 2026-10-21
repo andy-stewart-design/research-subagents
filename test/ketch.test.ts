@@ -97,6 +97,7 @@ function fakeApi(existing = false, toolsReady = true, codemodeActive = true) {
   const api = {
     getMcpServers: () => existing ? [{ name: "ketch", config: { command: "user-owned" } }] : [],
     registerMcpServer: (name: string, config: McpServerConfig) => registrations.push({ name, config }),
+    registerTool: () => {},
     on: (name: string, handler: Handler) => handlers.set(name, handler),
     getAllTools: () => toolsReady ? ready("deferred") : [],
     getActiveTools: () => codemodeActive ? ["codemode", "read"] : ["read"],
@@ -110,7 +111,7 @@ test("factory registers default Ketch only; existing extension-owned servers are
   const fresh = fakeApi();
   extension(fresh.api);
   assert.deepEqual(fresh.registrations, [{ name: "ketch", config: createKetchServerConfig("codemode") }]);
-  assert.deepEqual([...fresh.handlers.keys()], ["session_start", "session_shutdown"]);
+  assert.deepEqual([...fresh.handlers.keys()], ["tool_call", "session_start", "session_shutdown"]);
   const existing = fakeApi(true);
   extension(existing.api);
   assert.deepEqual(existing.registrations, []);

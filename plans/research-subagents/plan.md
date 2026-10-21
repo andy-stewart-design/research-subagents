@@ -4,7 +4,7 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0, Phase 1, Steps 2.1–2.3, and G0–G2 are Verified for their deterministic/native scopes. Steps 3.1–3.2 and G3 remain Pending. The entry point provides Ketch MCP integration only; the tested child adapter/runner is not registered as delegation yet.
+- Delivery state: In progress. Phase 0, Phase 1, Steps 2.1–2.3, Step 3.1, and G0–G2 are Verified for their deterministic/native scopes. Step 3.2 and G3 remain Pending. The entry point now registers Ketch MCP and the public research tool; live acceptance is not yet claimed.
 - Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
 - Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
@@ -280,7 +280,7 @@ Review boundary: public tool wiring/rendering, local loading/setup guidance, and
 
 ### Step 3.1 — Wire the public research tool and compact progress rendering
 
-Status: Pending
+Status: Verified
 Requirements / acceptance: R1, R4, R6–R12; AC1, AC5, AC8–AC16 (integrated automated portions). The backend/TUI/manual portions are owned by Step 3.2, not claimed here.
 Depends on: Step 2.3.
 Review boundary: atomic schema/runner/renderer integration into the existing Ketch entry point; no stub tools or nested-agent UI.
@@ -290,22 +290,23 @@ Expected files:
 - `index.ts` — add validated `research` tool, prompt guidance, progress projection, shutdown handler, and truthful result errors/usage.
 - `lib/render.ts` — add only compact call/status/activity and expanded bounded report presentation using Pi's built-in components/width helpers.
 - `test/tool.test.ts`, `test/render.test.ts`, `test/integration/extension.test.ts` — add public tool-pipeline, exposure, noninterference, and render fixtures.
+- `package.json`, `package-lock.json` — add the host-provided Pi TUI peer/development copy used by the renderer.
 
 Tasks:
 
-- [ ] Register the strict `research({ agent, task })` schema and shared runner without model-controlled directory/tool/model overrides. Validate raw `research` input in a `tool_call` hook before Pi's native argument coercion, as well as at execution; invalid direct/programmatic calls fail before session creation. Preserve native coercion semantics for Ketch tools rather than adding a second MCP validator.
-- [ ] Capture dispatch plain data, propagate the tool signal, and send only bounded model-facing report/diagnostic content. Mark errors through the supported tool-result failure contract; keep status metadata separate from raw transcripts and include nested usage once when measured.
-- [ ] Render queued/running/terminal status, profile/task, elapsed time/tool activity, and expanded bounded report; never stream the child transcript or reasoning to parent context. Handle partial arguments, no TUI, narrow widths, and Unicode with library helpers.
-- [ ] Add guidance for autonomous multi-step delegation versus direct simple Ketch lookups and self-contained child tasks. Do not force routing or alter unrelated parent active tools/model/thinking.
-- [ ] Wire parent session shutdown/reload to owned-run cleanup; test a full tool invocation with scripted child outcomes and native fake MCP, parent/sibling sentinel isolation, schema failures, overflow, errors, and cancellation. Do not confuse a registry spy with a real tool-pipeline integration.
+- [x] Register the strict `research({ agent, task })` schema and shared runner without model-controlled directory/tool/model overrides. Validate raw `research` input in a `tool_call` hook before Pi's native argument coercion, as well as at execution; invalid direct/programmatic calls fail before session creation. Preserve native coercion semantics for Ketch tools rather than adding a second MCP validator.
+- [x] Capture dispatch plain data, propagate the tool signal, and send only bounded model-facing report/diagnostic content. Mark errors through the supported tool-result failure contract; keep status metadata separate from raw transcripts and include nested usage once when measured.
+- [x] Render queued/running/terminal status, profile/task, elapsed time/tool activity, and expanded bounded report; never stream the child transcript or reasoning to parent context. Handle partial arguments, no TUI, narrow widths, and Unicode with library helpers.
+- [x] Add guidance for autonomous multi-step delegation versus direct simple Ketch lookups and self-contained child tasks. Do not force routing or alter unrelated parent active tools/model/thinking.
+- [x] Wire parent session shutdown/reload to owned-run cleanup; test a full tool invocation with scripted child outcomes and native fake MCP, parent/sibling sentinel isolation, schema failures, overflow, errors, and cancellation. Do not confuse a registry spy with a real tool-pipeline integration.
 
 Verification:
 
 - Automated: `node --import tsx --test test/tool.test.ts test/render.test.ts` and `node --import tsx --test test/integration/extension.test.ts`, then `npm run typecheck`. Assert complete schema-to-runner-to-result behavior; only intended Ketch/codemode/research additions; bounded text; no transcript details; correct failure flags; no-TUI parity; stable rendering at narrow widths; parent state/config snapshots unchanged.
 - Manual: Inspect default/expanded render snapshots and documented Ctrl+C semantics. Interactive/model/backend proof remains Step 3.2.
 
-Completion gate: public registration and its consumers/tests land atomically and pass scoped pipeline checks. No private worker/profile/config behavior is exposed accidentally. Ketch direct programmatic calls still require no delegated session.
-Evidence: Not run.
+Completion gate: Passed. Public registration and its consumers/tests landed atomically; the tool exposes only the fixed two-profile input, keeps private child/session behavior behind the runner, and preserves direct Ketch calls without requiring delegation.
+Evidence: `npm run check` passed typecheck, 88 unit tests, and 25 native integration tests (113 total, no skips). [step-3.1.md](evidence/step-3.1.md) records the public schema/runner/result contract, compact renderer, shutdown ownership, and scripted/native proof boundary. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
 ### Step 3.2 — Document local setup and verify actual user-facing behavior
 

@@ -38,6 +38,7 @@ interface RunEntry {
   readonly resolve: (outcome: SessionOutcome) => void;
   readonly queuedAt: number;
   readonly controller: AbortController;
+  readonly onStatus: ((status: ResearchRunStatus) => void) | undefined;
   removeCallerAbort?: () => void;
   completion: Promise<void>;
   state: "queued" | "running";
@@ -105,7 +106,11 @@ export class ResearchRunner {
   get activeCount(): number { return this.active.size; }
   get queuedCount(): number { return this.queue.length; }
 
-  run(input: unknown, options: ResearchSessionOptions): Promise<SessionOutcome> {
+  run(
+    input: unknown,
+    options: ResearchSessionOptions,
+    onStatus?: (status: ResearchRunStatus) => void,
+  ): Promise<SessionOutcome> {
     let parsed: ResearchInput;
     try {
       parsed = parseResearchInput(input);
@@ -128,7 +133,7 @@ export class ResearchRunner {
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
       const entry: RunEntry = {
-        id: this.nextId++, input: parsed, options, resolve, queuedAt, controller,
+        id: this.nextId++, input: parsed, options, resolve, queuedAt, controller, onStatus,
         state: "queued", completion: Promise.resolve(), timedOut: false,
         cancellationRequested: false, shutdownRequested: false, settled: false,
       };
@@ -261,21 +266,19 @@ export class ResearchRunner {
   }
 
   private emit(entry: RunEntry, state: ResearchRunState, outcome?: SessionOutcome, activity?: SessionOutcome["activity"]): void {
-    if (!this.onStatus) return;
+    if (!this.onStatus && !entry.onStatus) return;
     const now = this.now();
     const startedAt = entry.startedAt;
     const currentActivity = outcome?.activity ?? activity;
-    try {
-      this.onStatus({
-        id: entry.id, state, agent: entry.input.agent, task: entry.input.task,
-        queuedAt: entry.queuedAt, ...(startedAt !== undefined ? { startedAt } : {}),
-        ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
-          ? { finishedAt: now, elapsedMs: now - (startedAt ?? entry.queuedAt) } : {}),
-        ...(currentActivity ? { activity: currentActivity } : {}),
-      });
-    } catch {
-      // Observability must never change child execution, capacity, or cleanup semantics.
-    }
+    const status: ResearchRunStatus = {
+      id: entry.id, state, agent: entry.input.agent, task: entry.input.task,
+      queuedAt: entry.queuedAt, ...(startedAt !== undefined ? { startedAt } : {}),
+      ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
+        ? { finishedAt: now, elapsedMs: now - (startedAt ?? entry.queuedAt) } : {}),
+      ...(currentActivity ? { activity: currentActivity } : {}),
+    };
+    try { this.onStatus?.(status); } catch { /* Observability cannot affect execution. */ }
+    try { entry.onStatus?.(status); } catch { /* Observability cannot affect execution. */ }
   }
 }
 
