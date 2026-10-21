@@ -107,7 +107,7 @@ The compact TUI rendering shows profile, bounded task preview, queue/running/com
 
 ## Recovery and removal
 
-The package is not installed or added to personal Pi settings by this repository. Use explicit `--extension` paths for temporary testing. To stop using it, remove those flags or disable/remove the package resource through Pi's normal package controls; no research configuration or Ketch file needs to be rewritten. Correct missing model credentials, Ketch setup, or Scout binaries outside the research tool and retry.
+The package is installed into personal Pi settings only when explicitly requested with `pi install`; explicit `--extension` paths remain available for temporary testing. To stop using an installed copy, run `pi remove /absolute/path/to/research-subagents` (or use Pi's package controls). No research configuration or Ketch file needs to be rewritten. Correct missing model credentials, Ketch setup, or Scout binaries outside the research tool and retry.
 
 Run the deterministic checks from the repository root with:
 

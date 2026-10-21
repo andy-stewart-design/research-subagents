@@ -143,10 +143,11 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     pi.registerTool({
       name: RESEARCH_TOOL,
       label: "research",
-      description: "Delegate one focused, read-only local or external research task to a fresh child context and return a compact evidence-backed report.",
-      promptSnippet: "delegate focused research to a fresh isolated context",
+      description: "Delegate multi-step read-only local or external investigations to a fresh isolated child; use direct Ketch only for a single focused lookup.",
+      promptSnippet: "delegate multi-step investigations to a fresh isolated context",
       promptGuidelines: [
-        "Use direct Ketch tools for simple lookups; use research for multi-step investigations that benefit from a fresh context.",
+        "For investigations spanning multiple files, external sources, or evidence synthesis, delegate to research instead of reproducing the work in the parent with read, bash, or codemode.",
+        "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
       ],
       parameters: ResearchInputSchema,

@@ -22,7 +22,7 @@
 3. Both, Ketch then research.
 4. Both, research then Ketch.
 
-Each invocation uses `--help`, so Jiti/extension loading is exercised without a model request or Ketch backend connection. The test verifies successful startup, empty stderr, the two-entry manifest, the absence of the removed root `index.ts`, and that the project directory remains disposable and separate from the repository. Factory tests additionally verify no duplicate Ketch registration, one research tool, independent loading, reversed composition, and no factory-started processes/timers.
+Each invocation uses Pi RPC mode with a `get_state` request, so Jiti/extension loading and the runtime registration path are exercised without a model request. A disposable observer extension records `pi.getMcpServers()` and `pi.getAllTools()` at `session_start`; the test asserts Ketch registration and/or the research tool for each composition, checks exit status and loader stderr, and uses the disposable project as the process cwd. It also verifies the two-entry manifest, the absence of the removed root `index.ts`, and that the project directory remains separate from the repository. Factory tests additionally verify no duplicate Ketch registration, one research tool, independent loading, reversed composition, and no factory-started processes/timers.
 
 ## Automated verification
 
@@ -33,6 +33,16 @@ npm run check
 ```
 
 Passed: typecheck, **96 unit tests**, and **27 integration tests** (123 total), with no skips. The integration total includes the disposable Pi/Jiti loading check. Native lifecycle, bounded reports, cancellation/timeout, parent-precedence validation, Scout independence, and hostile-descendant cleanup remain passing.
+
+## Actual user setup and smoke test
+
+With explicit user approval, installed the local package into the personal Pi package settings:
+
+```text
+pi install /Users/andy/Documents/Development/research-subagents
+```
+
+`pi list` reports the local package path, and the resulting `~/.pi/agent/settings.json` contains the package declaration. No package files were copied or modified and no other Pi/Ketch configuration was changed. The user subsequently reported that the basic interactive smoke test worked successfully.
 
 ## Outstanding acceptance
 
