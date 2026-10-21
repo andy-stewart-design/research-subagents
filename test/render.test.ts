@@ -38,6 +38,13 @@ test("progress and expanded result rendering expose status/activity without a tr
   assert.doesNotMatch(text, /reasoning|tool transcript/i);
 });
 
+test("setup diagnostics remain visible when a result has no renderer details", () => {
+  const component = renderResearchResult({
+    content: [{ type: "text", text: "Configuration failed: operator action required." }], details: undefined as any,
+  }, { expanded: true, isPartial: false }, theme);
+  assert.match(component.render(40).join("\n"), /Configuration failed/);
+});
+
 test("partial rendering remains useful without a TUI-specific dependency", () => {
   const details: ResearchToolDetails = { status: "running", agent: "scout", task: "question" };
   const component = renderResearchResult({ content: [], details }, { expanded: false, isPartial: true }, theme);

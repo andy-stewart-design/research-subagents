@@ -7,6 +7,7 @@ import { Text, type Component, stripTerminalSequences, truncateToWidth } from "@
 import type { ResearchInput } from "./profiles.ts";
 import type { ResearchRunState, ResearchRunStatus } from "./runner.ts";
 import type { SessionActivity } from "./session.ts";
+import { createDiagnosticHandoff } from "./report.ts";
 
 export interface ResearchToolDetails {
   readonly status: ResearchRunState;
@@ -70,9 +71,20 @@ export function renderResearchResult(
 ): Component {
   const details = result.details;
   if (options.isPartial) {
-    return new Text(theme.fg("warning", details ? `Research ${details.status}…` : "Research running…"), 0, 0);
+    if (!details) return new Text(theme.fg("warning", "Research running…"), 0, 0);
+    let progress = `Research ${details.status}`;
+    if (details.activity) {
+      progress += ` · ${details.activity.toolCalls} tool call(s)`;
+      if (details.activity.latestTool) progress += ` · ${details.activity.latestTool}`;
+    }
+    if (details.elapsedMs !== undefined) progress += ` · ${Math.round(details.elapsedMs)}ms`;
+    return new Text(theme.fg("warning", progress), 0, 0);
   }
-  if (!details) return new Text(theme.fg("error", "Research result unavailable."), 0, 0);
+  if (!details) {
+    const diagnostic = createDiagnosticHandoff(resultText(result)).text;
+    const visible = options.expanded ? diagnostic : diagnostic.split("\n")[0] ?? diagnostic;
+    return new Text(theme.fg("error", visible || "Research result unavailable."), 0, 0);
+  }
 
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";

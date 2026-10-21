@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setImmediate as nextTick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type { ExtensionAPI, McpServerConfig } from "@earendil-works/pi-coding-agent";
 import extension from "../index.ts";
 import {
-  KETCH_TOOLS, createKetchServerConfig, loadResearcherMcpConfig, waitForKetchCapabilities,
+  KETCH_TOOLS, createKetchServerConfig, loadResearcherMcpConfig, validateParentKetchTransport, waitForKetchCapabilities,
   type KetchToolView,
 } from "../lib/ketch.ts";
 
@@ -17,6 +19,31 @@ const view = (exposure: "direct" | "deferred"): KetchToolView => ({
 test("manifest declares only the actual entry point", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.deepEqual(manifest.pi, { extensions: ["./index.ts"] });
+});
+
+test("transport-changing parent Ketch overrides are rejected before delegated research", () => {
+  const error = validateParentKetchTransport({
+    getMcpServers: () => [{ name: "ketch", config: { command: "custom-ketch", env: { HOME: "/private" } } }],
+  }, "/project", "/agent", false);
+  assert.match(error ?? "", /differs from the delegated researcher/);
+  assert.match(error ?? "", /Configuration was not changed/);
+  assert.equal(validateParentKetchTransport({
+    getMcpServers: () => [{ name: "ketch", config: createKetchServerConfig("codemode") }],
+  }, "/project", "/agent", false), undefined);
+});
+
+test("project Ketch transport replaces global configuration while metadata overrides inherit it", () => {
+  const root = join(tmpdir(), `research-ketch-${process.pid}-${Date.now()}`);
+  const agentDir = join(root, "agent");
+  mkdirSync(join(root, ".pi"), { recursive: true });
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { ketch: createKetchServerConfig("codemode") } }));
+  writeFileSync(join(root, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { ketch: { url: "https://different.invalid/mcp" } } }));
+  const view = { getMcpServers: () => [{ name: "ketch", config: createKetchServerConfig("codemode") }] };
+  assert.match(validateParentKetchTransport(view, root, agentDir, true) ?? "", /differs from the delegated researcher/);
+  writeFileSync(join(root, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { ketch: { description: "project label" } } }));
+  assert.equal(validateParentKetchTransport(view, root, agentDir, true), undefined);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("shared Ketch configuration fixes the CLI and exposes only four core tools", () => {
@@ -103,7 +130,7 @@ function fakeApi(existing = false, toolsReady = true, codemodeActive = true) {
     getActiveTools: () => codemodeActive ? ["codemode", "read"] : ["read"],
   } as unknown as ExtensionAPI;
   const event = {} as never;
-  const ctx = { ui: { notify: (message: string) => notices.push(message) } } as never;
+  const ctx = { ui: { notify: (message: string) => notices.push(message) }, isProjectTrusted: () => false } as never;
   return { api, handlers, registrations, notices, event, ctx };
 }
 

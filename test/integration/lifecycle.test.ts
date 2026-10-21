@@ -8,6 +8,7 @@ import { StdioTransport } from "@earendil-works/pi-mcp";
 import { createAgentSession, type AgentSession, type CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../../lib/config.ts";
 import { ResearchRunner } from "../../lib/runner.ts";
+import { createOwnedKetchTransport } from "../../lib/ketch.ts";
 import { createChildModelRuntime, runResearchSession, type ResearchSessionOptions, type SessionServices } from "../../lib/session.ts";
 import { assistant, completedStream } from "../fixtures/session-fixtures.ts";
 
@@ -81,6 +82,13 @@ async function setup(t: TestContext, mode: "unresponsive" | "hang-call") {
   return { root, options, services, pids, get requests() { return requests; } };
 }
 
+async function waitForFile(path: string): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try { return (await fs.readFile(path, "utf8")).trim(); } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+  }
+  throw new Error(`Fixture did not create ${path}.`);
+}
+
 async function assertExited(pids: Set<number>) {
   for (const pid of pids) {
     for (let attempt = 0; attempt < 30; attempt++) {
@@ -93,6 +101,30 @@ async function assertExited(pids: Set<number>) {
     }
   }
 }
+
+test("the feature-owned transport force-closes a same-group descendant after native close", { timeout: 10_000 }, async (t) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "research-process-group-"));
+  const parentPidFile = join(root, "parent.pid"), descendantPidFile = join(root, "descendant.pid");
+  const transport = createOwnedKetchTransport({
+    name: "ketch",
+    source: "fixture",
+    config: {
+      command: process.execPath,
+      args: [fixtureServer],
+      env: {
+        FAKE_MCP_PID: parentPidFile,
+        FAKE_MCP_DESCENDANT_PID: descendantPidFile,
+        FAKE_MCP_DESCENDANT_INHERIT_PIPES: "1",
+      },
+    },
+  }, root);
+  t.after(async () => { try { await transport.close(); } catch { /* preserve the test failure */ } await fs.rm(root, { recursive: true, force: true }); });
+  await transport.start();
+  const parentPid = Number(await waitForFile(parentPidFile));
+  const descendantPid = Number(await waitForFile(descendantPidFile));
+  await transport.close();
+  await assertExited(new Set([parentPid, descendantPid]));
+});
 
 test("an unresponsive MCP startup fails closed and native teardown exits the owned process", { timeout: 10_000 }, async (t) => {
   const fixture = await setup(t, "unresponsive");

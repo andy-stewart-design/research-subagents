@@ -1,7 +1,8 @@
 import { getAgentDir, type AgentToolResult, type ExtensionAPI, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { KETCH_SERVER, createKetchServerConfig, waitForKetchCapabilities } from "./lib/ketch.ts";
+import { KETCH_SERVER, createKetchServerConfig, validateParentKetchTransport, waitForKetchCapabilities } from "./lib/ketch.ts";
 import { loadConfig, type DispatchDefaults, type ResearchConfig } from "./lib/config.ts";
+import { createDiagnosticHandoff } from "./lib/report.ts";
 import {
   detailsFromStatus, formatResearchProgress, previewTask, renderResearchCall, renderResearchResult,
   type ResearchToolDetails,
@@ -9,6 +10,7 @@ import {
 import { ResearchInputSchema, parseResearchInput } from "./lib/profiles.ts";
 import { createResearchRunner, type ResearchRunStatus, type ResearchRunner } from "./lib/runner.ts";
 import type { SessionOutcome } from "./lib/session.ts";
+import { resolveWorkspaceRoot } from "./lib/workspace.ts";
 
 const RESEARCH_TOOL = "research";
 const ResearchStatusSchema = Type.Union([
@@ -34,11 +36,12 @@ function sessionOptions(
   ctx: ExtensionToolContext,
   config: ResearchConfig,
   agentDir: string,
+  workspaceDir: string,
   signal: AbortSignal | undefined,
 ): Parameters<ResearchRunner["run"]>[1] {
   return {
     cwd: ctx.cwd,
-    workspaceDir: ctx.cwd,
+    workspaceDir,
     agentDir,
     config,
     parent: parentDefaults(ctx),
@@ -78,6 +81,17 @@ function progressResult(status: ResearchRunStatus): ResearchToolResult {
   };
 }
 
+function setupFailure(input: { agent: "scout" | "researcher"; task: string }, error: unknown): ResearchToolResult {
+  const handoff = createDiagnosticHandoff(error instanceof Error ? error.message : "Research setup failed.");
+  const outcome: SessionOutcome = { status: "failed", handoff, activity: { assistantMessages: 0, toolCalls: 0 } };
+  return {
+    content: [{ type: "text", text: handoff.text }],
+    details: finalDetails(input, outcome),
+    structuredContent: finalStructured(outcome),
+    isError: true,
+  };
+}
+
 async function executeResearch(
   runner: ResearchRunner,
   config: ResearchConfig,
@@ -87,8 +101,9 @@ async function executeResearch(
   signal: AbortSignal | undefined,
   onUpdate: ((result: ResearchToolResult) => void) | undefined,
 ): Promise<ResearchToolResult> {
+  const workspaceDir = resolveWorkspaceRoot(ctx.cwd);
   let finalStatus: ResearchRunStatus | undefined;
-  const outcome = await runner.run(input, sessionOptions(ctx, config, agentDir, signal), (status) => {
+  const outcome = await runner.run(input, sessionOptions(ctx, config, agentDir, workspaceDir, signal), (status) => {
     finalStatus = status;
     try { onUpdate?.(progressResult(status)); } catch { /* Progress is never execution-critical. */ }
   });
@@ -119,6 +134,7 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
   }
 
   let startup: AbortController | undefined;
+  let parentKetchError: string | undefined;
   let runner: ResearchRunner | undefined;
   let runnerConfig: ResearchConfig | undefined;
 
@@ -147,8 +163,13 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const input = parseResearchInput(params);
-      const agentDir = getAgentDirForExtension();
-      return executeResearch(getRunner(agentDir), runnerConfig!, agentDir, input, ctx, signal, onUpdate);
+      try {
+        if (parentKetchError && input.agent === "researcher") return setupFailure(input, new Error(parentKetchError));
+        const agentDir = getAgentDirForExtension();
+        return await executeResearch(getRunner(agentDir), runnerConfig!, agentDir, input, ctx, signal, onUpdate);
+      } catch (error) {
+        return setupFailure(input, error);
+      }
     },
     renderCall(args, theme) {
       return renderResearchCall(args, theme);
@@ -166,6 +187,11 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
 
   pi.on("session_start", (_event, ctx) => {
     startup?.abort();
+    parentKetchError = validateParentKetchTransport(pi, ctx.cwd, getAgentDirForExtension(), ctx.isProjectTrusted());
+    if (parentKetchError) {
+      ctx.ui.notify(parentKetchError, "warning");
+      return;
+    }
     const current = new AbortController();
     startup = current;
     void waitForKetchCapabilities(pi, { mode: "parent", signal: current.signal })
@@ -184,6 +210,7 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
   pi.on("session_shutdown", async () => {
     startup?.abort();
     startup = undefined;
+    parentKetchError = undefined;
     const current = runner;
     runner = undefined;
     runnerConfig = undefined;

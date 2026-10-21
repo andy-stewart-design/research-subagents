@@ -4,6 +4,7 @@ import { parseConfig } from "../lib/config.ts";
 import { createDiagnosticHandoff } from "../lib/report.ts";
 import { ResearchRunner, type ResearchRunStatus } from "../lib/runner.ts";
 import type { ResearchSessionOptions, SessionOutcome } from "../lib/session.ts";
+import { usage } from "./fixtures/session-fixtures.ts";
 
 const baseOptions: ResearchSessionOptions = {
   cwd: "/tmp/research-runner-project",
@@ -109,6 +110,34 @@ test("configured timeout starts only after a slot is granted and returns timed_o
   assert.equal(secondWasInitiallyAborted, false);
   assert.equal(result.status, "timed_out");
   assert.match(result.handoff.text, /timed out/);
+});
+
+test("first cancellation cause wins over a later timeout and preserves cleanup diagnostics, activity, and usage", async () => {
+  const controller = new AbortController();
+  const runner = new ResearchRunner({
+    maxConcurrency: 1,
+    timeoutMs: 20,
+    runSession: async (_input, childOptions) => {
+      await waitFor(childOptions.signal!);
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      return {
+        status: "failed",
+        handoff: createDiagnosticHandoff("Research cleanup failed: MCP descendant remained alive."),
+        activity: { assistantMessages: 4, toolCalls: 7, latestTool: "mcp__ketch__search" },
+        usage: usage(2),
+      };
+    },
+  });
+  const pending = runner.run({ agent: "researcher", task: "cancel" }, options("cancel", controller.signal));
+  await tick();
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.usage?.totalTokens, 20);
+  assert.equal(result.activity.toolCalls, 7);
+  assert.match(result.handoff.text, /descendant remained alive/);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(result.status, "cancelled");
 });
 
 test("parent shutdown cancels active children, queued work, and waits for owned cleanup", async () => {

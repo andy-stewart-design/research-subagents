@@ -43,8 +43,9 @@ interface RunEntry {
   completion: Promise<void>;
   state: "queued" | "running";
   startedAt?: number;
-  timer?: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   timedOut: boolean;
+  interruption: "cancelled" | "timed_out" | undefined;
   cancellationRequested: boolean;
   shutdownRequested: boolean;
   settled: boolean;
@@ -56,14 +57,24 @@ function initialActivity(): SessionOutcome["activity"] {
   return { assistantMessages: 0, toolCalls: 0 };
 }
 
-function cancelled(message: string): SessionOutcome {
-  return { status: "cancelled", handoff: createDiagnosticHandoff(message), activity: initialActivity() };
+function interruptionMessage(message: string, result?: SessionOutcome): string {
+  if (!result?.handoff.isError || !result.handoff.text || result.handoff.text === message) return message;
+  return `${message}\n${result.handoff.text}`;
+}
+
+function cancelled(message: string, result?: SessionOutcome): SessionOutcome {
+  return {
+    status: "cancelled",
+    handoff: createDiagnosticHandoff(interruptionMessage(message, result)),
+    activity: result?.activity ?? initialActivity(),
+    ...(result?.usage ? { usage: result.usage } : {}),
+  };
 }
 
 function timedOut(message: string, result?: SessionOutcome): SessionOutcome {
   return {
     status: "timed_out",
-    handoff: createDiagnosticHandoff(message),
+    handoff: createDiagnosticHandoff(interruptionMessage(message, result)),
     activity: result?.activity ?? initialActivity(),
     ...(result?.usage ? { usage: result.usage } : {}),
   };
@@ -134,11 +145,13 @@ export class ResearchRunner {
       const controller = new AbortController();
       const entry: RunEntry = {
         id: this.nextId++, input: parsed, options, resolve, queuedAt, controller, onStatus,
-        state: "queued", completion: Promise.resolve(), timedOut: false,
-        cancellationRequested: false, shutdownRequested: false, settled: false,
+        state: "queued", completion: Promise.resolve(), timer: undefined, timedOut: false,
+        interruption: undefined, cancellationRequested: false, shutdownRequested: false, settled: false,
       };
       const onCallerAbort = () => {
         entry.cancellationRequested = true;
+        if (entry.interruption === undefined) entry.interruption = "cancelled";
+        this.clearTimer(entry);
         if (entry.state === "queued") this.cancelQueued(entry, "Research cancelled while queued; no child was started.");
         else controller.abort(options.signal?.reason);
       };
@@ -164,6 +177,8 @@ export class ResearchRunner {
       for (const entry of this.active) {
         entry.shutdownRequested = true;
         entry.cancellationRequested = true;
+        if (entry.interruption === undefined) entry.interruption = "cancelled";
+        this.clearTimer(entry);
         entry.controller.abort();
       }
       // Active entries are removed only after runResearchSession has awaited native shutdown and
@@ -214,16 +229,16 @@ export class ResearchRunner {
         activity: initialActivity(),
       };
     } finally {
-      if (entry.timer) clearTimeout(entry.timer);
+      this.clearTimer(entry);
       entry.removeCallerAbort?.();
     }
 
-    if (entry.timedOut) {
+    if (entry.interruption === "timed_out") {
       result = timedOut("Research timed out; no completed report is claimed.", result);
-    } else if (entry.cancellationRequested || entry.shutdownRequested || entry.controller.signal.aborted) {
+    } else if (entry.interruption === "cancelled" || entry.cancellationRequested || entry.shutdownRequested || entry.controller.signal.aborted) {
       result = cancelled(entry.shutdownRequested
         ? "Research cancelled because the parent session is shutting down."
-        : "Research cancelled; no completed report is claimed.");
+        : "Research cancelled; no completed report is claimed.", result);
     }
     this.finish(entry, result);
   }
@@ -234,13 +249,22 @@ export class ResearchRunner {
       const elapsed = this.now() - entry.startedAt!;
       const remaining = timeoutMs - elapsed;
       if (remaining <= 0) {
+        if (entry.interruption !== undefined) return;
         entry.timedOut = true;
+        entry.interruption = "timed_out";
         entry.controller.abort(new Error("Research safety timeout elapsed."));
         return;
       }
       entry.timer = setTimeout(schedule, Math.min(remaining, MAX_TIMER_MS));
     };
     entry.timer = setTimeout(schedule, Math.min(timeoutMs, MAX_TIMER_MS));
+  }
+
+  private clearTimer(entry: RunEntry): void {
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
   }
 
   private cancelQueued(entry: RunEntry, message: string): void {
@@ -272,9 +296,10 @@ export class ResearchRunner {
     const currentActivity = outcome?.activity ?? activity;
     const status: ResearchRunStatus = {
       id: entry.id, state, agent: entry.input.agent, task: entry.input.task,
-      queuedAt: entry.queuedAt, ...(startedAt !== undefined ? { startedAt } : {}),
+      queuedAt: entry.queuedAt,
+      ...(startedAt !== undefined ? { startedAt, elapsedMs: now - startedAt } : {}),
       ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
-        ? { finishedAt: now, elapsedMs: now - (startedAt ?? entry.queuedAt) } : {}),
+        ? { finishedAt: now } : {}),
       ...(currentActivity ? { activity: currentActivity } : {}),
     };
     try { this.onStatus?.(status); } catch { /* Observability cannot affect execution. */ }

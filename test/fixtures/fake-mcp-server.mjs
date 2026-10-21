@@ -1,9 +1,17 @@
 // Local JSONL protocol fixture only. It never performs network requests or model calls.
 import { appendFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 const names = (process.env.FAKE_MCP_TOOLS ?? "search,scrape,code,docs,crawl,tag").split(",");
 const marker = process.env.FAKE_MCP_MARKER ?? "fixture";
 if (process.env.FAKE_MCP_PID) writeFileSync(process.env.FAKE_MCP_PID, String(process.pid));
+if (process.env.FAKE_MCP_DESCENDANT_PID) {
+  const descendant = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000)"], {
+    stdio: process.env.FAKE_MCP_DESCENDANT_INHERIT_PIPES === "1"
+      ? ["ignore", process.stdout, process.stderr] : "ignore",
+  });
+  if (descendant.pid) writeFileSync(process.env.FAKE_MCP_DESCENDANT_PID, String(descendant.pid));
+}
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 
 function handle(request) {

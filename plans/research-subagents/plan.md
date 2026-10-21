@@ -269,7 +269,7 @@ Verification:
 Completion gate: queue/race and native process-lifetime assertions pass without hanging the test process, including success/failure/shutdown cleanup. Optional timeout remains off by default and does not become a hidden startup-to-completion budget.
 Evidence: `npm run check` passed typecheck, 82 unit tests, and 24 native integration tests (106 total, no skips). [step-2.3.md](evidence/step-2.3.md) records the runner/status implementation, queue and timeout semantics, and native unresponsive-process proof. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
-Phase exit gate **G2**: Passed for the deterministic/native scope. `npm run check` and the combined review show only Ketch connects for researcher, scout has no MCP connection, no first prompt occurs before researcher capabilities are ready, and terminal paths release feature-owned capacity/resources. Parent and sibling noninterference remains covered by the preceding isolation fixtures; live backend/TUI acceptance remains Phase 3 work.
+Phase exit gate **G2**: Reopened during adversarial review for the native descendant-teardown and interruption/reporting races, then reverified after correction. The final `npm run check` and lifecycle fixtures show only Ketch connects for researcher, scout has no MCP connection, no first prompt occurs before researcher capabilities are ready, hostile same-group descendants are terminated, parent/child Ketch transport-changing overrides are rejected, and terminal paths preserve truthful bounded outcomes while releasing feature-owned capacity/resources. Parent and sibling noninterference remains covered by the preceding isolation fixtures; live backend/TUI acceptance remains Phase 3 work.
 Evidence: [step-2.3.md](evidence/step-2.3.md).
 
 ## Phase 3 — Delegation surface and acceptance
@@ -306,7 +306,7 @@ Verification:
 - Manual: Inspect default/expanded render snapshots and documented Ctrl+C semantics. Interactive/model/backend proof remains Step 3.2.
 
 Completion gate: Passed. Public registration and its consumers/tests landed atomically; the tool exposes only the fixed two-profile input, keeps private child/session behavior behind the runner, and preserves direct Ketch calls without requiring delegation.
-Evidence: `npm run check` passed typecheck, 88 unit tests, and 25 native integration tests (113 total, no skips). [step-3.1.md](evidence/step-3.1.md) records the public schema/runner/result contract, compact renderer, shutdown ownership, and scripted/native proof boundary. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
+Evidence: Final `npm run check` passed typecheck, 95 unit tests, and 26 native integration tests (121 total, no skips). [step-3.1.md](evidence/step-3.1.md) records the public schema/runner/result contract, compact renderer, shutdown ownership, and scripted/native proof boundary, including bounded MCP escalation, parent/child Ketch validation, and adversarial lifecycle/reporting fixes. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
 ### Step 3.2 — Document local setup and verify actual user-facing behavior
 
