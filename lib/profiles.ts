@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
+import { KETCH_TOOLS } from "./ketch.ts";
 
 export const PROFILE_NAMES = Object.freeze(["scout", "researcher"] as const);
 export type ProfileName = (typeof PROFILE_NAMES)[number];
@@ -46,12 +47,7 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = Object.freeze({
   researcher: Object.freeze({
     name: "researcher",
     description: "External research with sourced, compact findings.",
-    tools: Object.freeze([
-      "mcp__ketch__search",
-      "mcp__ketch__scrape",
-      "mcp__ketch__code",
-      "mcp__ketch__docs",
-    ]),
+    tools: KETCH_TOOLS,
   }),
 });
 

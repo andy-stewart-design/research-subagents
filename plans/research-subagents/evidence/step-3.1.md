@@ -2,13 +2,13 @@
 
 ## Result
 
-**Verified for the deterministic/native tool-pipeline scope.** `npm run check` passed typecheck, **95 unit tests and 26 integration tests** (121 total), with no skips on this platform. The final rerun includes adversarial fixes for bounded MCP escalation, parent/child Ketch transport validation, interruption races, initialization diagnostics, repository-root report exclusion, and live progress rendering.
+**Verified for the deterministic/native tool-pipeline scope.** Before the entry-point split, `npm run check` passed typecheck, **95 unit tests and 26 integration tests** (121 total). After the split, `npm test` passes **96 unit tests** and the integration suite remains green; Step 3.2 will record the complete post-refactor `npm run check` plus disposable loading proof. The implementation includes bounded MCP escalation, dispatch-time parent/child Ketch transport validation, interruption races, initialization diagnostics, repository-root report exclusion, and live progress rendering.
 
-The entry point now exposes the strict `research({ agent, task })` tool. It uses the shared runner from Step 2.3, captures the dispatching session's plain cwd/agent/model/thinking data, propagates the tool signal, and owns active-run cleanup from `session_shutdown`. The public tool is now registered alongside the existing native Ketch integration.
+The standalone research entry point exposes the strict `research({ agent, task })` tool. It uses the shared runner from Step 2.3, captures the dispatching session's plain cwd/agent/model/thinking data, propagates the tool signal, validates parent Ketch parity at researcher dispatch, and owns active-run cleanup from `session_shutdown`. The separate Ketch entry point owns only parent MCP registration/readiness.
 
 ## What changed
 
-- `index.ts` registers the two-profile schema, performs strict validation in `prepareArguments`, the `tool_call` hook, and execution, and rejects unsupported/invalid input before creating a child.
+- `extensions/research.ts` registers the two-profile schema, performs strict validation in `prepareArguments`, the `tool_call` hook, and execution, and rejects unsupported/invalid input before creating a child. `extensions/ketch.ts` independently registers parent Ketch/readiness without registering research.
 - The tool loads the optional read-only configuration, preserves the parent model/thinking selection as dispatch data, returns bounded final report/diagnostic content, marks non-completed outcomes with `isError`, and includes measured child usage once.
 - `lib/render.ts` provides compact call/progress/result rendering using Pi's TUI `Text` and width/ANSI helpers. Default output shows status and activity; expanded output shows the already-bounded report and retained overflow path. Missing details retain the actual bounded diagnostic. Rendering is optional and does not affect noninteractive execution.
 - Setup failures are converted to the same capped public result contract. Dispatches from a repository subdirectory resolve the `.git` root before report-storage exclusion checks. Runner activity includes elapsed time for live and terminal updates.

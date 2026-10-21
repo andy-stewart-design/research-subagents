@@ -4,7 +4,7 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0, Phase 1, Steps 2.1–2.3, Step 3.1, and G0–G2 are Verified for their deterministic/native scopes. Step 3.2 and G3 remain Pending. The entry point now registers Ketch MCP and the public research tool; live acceptance is not yet claimed.
+- Delivery state: In progress. Phase 0, Phase 1, Steps 2.1–2.3, Step 3.1, and G0–G2 are Verified for their deterministic/native scopes. Step 3.2 and G3 remain Pending. The package now exposes independently loadable Ketch and research extension entry points; live acceptance is not yet claimed.
 - Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
 - Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
@@ -186,9 +186,9 @@ Review boundary: a functional Ketch-only extension entry point plus child-only n
 
 Expected files:
 
-- `index.ts` — add real parent Ketch registration; no stub delegation tool.
+- `extensions/ketch.ts` — add real parent Ketch registration; no research tool or child runner.
 - `lib/ketch.ts` — add shared command/tool policy, native child `loadConfig`, and capability-readiness validation.
-- `package.json` — add explicit Pi manifest pointing only to `index.ts`; helper/test files are not discoverable extensions.
+- `package.json` — add explicit Pi manifest pointing to `extensions/ketch.ts` and `extensions/research.ts`; helper/test files are not discoverable extensions.
 - `test/ketch.test.ts`, `test/integration/ketch-mcp.test.ts` — add native MCP composition tests.
 - `test/fixtures/fake-mcp-server.mjs` — add a minimal disposable stdio fixture for process/tool/error testing, not a production MCP client.
 
@@ -283,11 +283,11 @@ Review boundary: public tool wiring/rendering, local loading/setup guidance, and
 Status: Verified
 Requirements / acceptance: R1, R4, R6–R12; AC1, AC5, AC8–AC16 (integrated automated portions). The backend/TUI/manual portions are owned by Step 3.2, not claimed here.
 Depends on: Step 2.3.
-Review boundary: atomic schema/runner/renderer integration into the existing Ketch entry point; no stub tools or nested-agent UI.
+Review boundary: atomic schema/runner/renderer integration into the standalone research entry point; no stub tools or nested-agent UI.
 
 Expected files:
 
-- `index.ts` — add validated `research` tool, prompt guidance, progress projection, shutdown handler, and truthful result errors/usage.
+- `extensions/research.ts` — add validated `research` tool, prompt guidance, progress projection, shutdown handler, and truthful result errors/usage; validate parent Ketch parity at researcher dispatch.
 - `lib/render.ts` — add only compact call/status/activity and expanded bounded report presentation using Pi's built-in components/width helpers.
 - `test/tool.test.ts`, `test/render.test.ts`, `test/integration/extension.test.ts` — add public tool-pipeline, exposure, noninterference, and render fixtures.
 - `package.json`, `package-lock.json` — add the host-provided Pi TUI peer/development copy used by the renderer.
@@ -306,7 +306,7 @@ Verification:
 - Manual: Inspect default/expanded render snapshots and documented Ctrl+C semantics. Interactive/model/backend proof remains Step 3.2.
 
 Completion gate: Passed. Public registration and its consumers/tests landed atomically; the tool exposes only the fixed two-profile input, keeps private child/session behavior behind the runner, and preserves direct Ketch calls without requiring delegation.
-Evidence: Final `npm run check` passed typecheck, 95 unit tests, and 26 native integration tests (121 total, no skips). [step-3.1.md](evidence/step-3.1.md) records the public schema/runner/result contract, compact renderer, shutdown ownership, and scripted/native proof boundary, including bounded MCP escalation, parent/child Ketch validation, and adversarial lifecycle/reporting fixes. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
+Evidence: The standalone-entry-point refactor preserves the public schema/runner/result contract, compact renderer, shutdown ownership, parent/child Ketch validation, and adversarial lifecycle/reporting fixes. `npm test` passes 96 unit tests and native integration remains 26 tests; the complete post-refactor gate is recorded during Step 3.2 loading verification. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
 ### Step 3.2 — Document local setup and verify actual user-facing behavior
 
@@ -325,15 +325,15 @@ Tasks:
 
 - [ ] Document separate direct-Ketch and delegated workflows, two-profile input, inherited/overridden models, private overflow paths, no sandbox, no default timeout, optional timeout interruption semantics, and the difference between research deadlines and native request timeouts.
 - [ ] Document explicit local loading from the package directory, required Pi 1.1.0/Ketch v0.18.1 target prerequisites, backend/browser/model setup responsibilities, preinstalled Scout rg/fd (or fdfind) prerequisites with no automatic downloads, native MCP/codemode requirements, conflicting file-configured Ketch precedence, and actionable missing-tool/auth failures. Explain read-only child authentication: refresh/sign in through the parent when needed; ephemeral parent keys/providers are not copied, and trusted configured credential commands remain ordinary Pi behavior, not sandboxed tools. Do not change the user's existing skill; explain that child guidance is bundled and independent of it.
-- [ ] Run the complete deterministic gate and actual local Pi extension loader in a disposable home/project; verify manifest scope and sibling helper/test files are not loaded as extensions. Ensure reference examples are not simultaneously auto-loaded and no real home is mutated.
+- [ ] Run the complete deterministic gate and actual local Pi extension loader in a disposable home/project; verify both manifest entry points, Ketch-only/research-only composition, reversed load order, and sibling helper/test files are not loaded as extensions. Ensure reference examples are not simultaneously auto-loaded and no real home is mutated.
 - [ ] After explicit live/model/web approval, use a controlled scratch repo and one-shot extension loading to perform a local scout task and a sourced researcher task. Exercise search, scrape, code, and docs programmatically; compare researcher capability/backend behavior, inspect concise citations/gaps, and read an overflow report if generated or injected for the check.
-- [ ] With human TUI access, observe queue/activity/expanded reports, cancel a running investigation, and confirm later work/parent Ketch still functions. Exercise a configured short safety timeout in the disposable setup; then remove it and confirm no research deadline is enabled. Observe noninteractive results separately.
+- [ ] With human TUI access, observe queue/activity/expanded reports, cancel a running investigation, and confirm later work/parent Ketch still functions. Test both independently loadable extension paths. Exercise a configured short safety timeout in the disposable setup; then remove it and confirm no research deadline is enabled. Observe noninteractive results separately.
 - [ ] Record what actually ran, versions/model/backend used without credentials, configuration/repo snapshot results, limitations and any blocked checks. Do not mark overall acceptance verified if live/manual criteria remain unperformed; an accepted waiver is an Accepted deviation with its owner and follow-up, not a passing test.
 
 Verification:
 
 - Automated: from `.`, `npm run check`, including the newly added loading check. Expected: deterministic suites pass with disposable resources, explicit loader/manifest composition succeeds, and reference directories/user files remain untouched. This does not prove real web/model behavior.
-- Manual, approval-required: create a disposable project and a private directory named by `$SMOKE_AGENT_DIR`, populate only its explicitly approved credential setup, and ensure Ketch is installed. From the disposable project, start `PI_CODING_AGENT_DIR="$SMOKE_AGENT_DIR" pi --no-extensions --extension builtin:mcp --extension builtin:codemode --extension /absolute/path/to/research-subagents/index.ts` (substitute the actual local package path). Confirm those explicit built-ins are enabled rather than relying on ambient extensions. Run the tasks/calls above and observe useful cited final reports, no child transcript handoff, truthful failures/interruptions, unchanged fixture repository and existing configuration/model selections, and clean owned-process teardown. A fake provider does not satisfy this check.
+- Manual, approval-required: create a disposable project and a private directory named by `$SMOKE_AGENT_DIR`, populate only its explicitly approved credential setup, and ensure Ketch is installed. From the disposable project, start `PI_CODING_AGENT_DIR="$SMOKE_AGENT_DIR" pi --no-extensions --extension builtin:mcp --extension builtin:codemode --extension /absolute/path/to/research-subagents/extensions/ketch.ts --extension /absolute/path/to/research-subagents/extensions/research.ts` (substitute the actual local package path). For independent checks, load only one of those two feature paths. Confirm those explicit built-ins are enabled rather than relying on ambient extensions. Run the tasks/calls above and observe useful cited final reports, no child transcript handoff, truthful failures/interruptions, unchanged fixture repository and existing configuration/model selections, and clean owned-process teardown. A fake provider does not satisfy this check.
 
 Completion gate: mark Verified only when documentation matches observed behavior and deterministic/loading plus required live/backend/TUI checks pass. If required live checks lack credentials, human access, or approval, leave this step Blocked rather than reporting a product pass. An explicitly waived check makes the affected step Accepted deviation, not Verified. No permanent installation is required to finish this gate.
 Evidence: Not run.

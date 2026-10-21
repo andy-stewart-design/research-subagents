@@ -10,7 +10,7 @@ import {
   createAgentSession, createCodemodeExtension, createMcpExtension, DefaultResourceLoader,
   ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionError, type LoadedMcpConfig,
 } from "@earendil-works/pi-coding-agent";
-import { createResearchExtension } from "../../index.ts";
+import { createResearchExtension } from "../../extensions/research.ts";
 import { parseConfig } from "../../lib/config.ts";
 import { ResearchRunner } from "../../lib/runner.ts";
 import type { SessionOutcome } from "../../lib/session.ts";

@@ -20,7 +20,7 @@
   },
   "include": [
     "lib/**/*.ts",
-    "test/**/*.ts",
-    "index.ts"
+    "extensions/**/*.ts",
+    "test/**/*.ts"
   ]
 }

@@ -8,10 +8,10 @@ The entry point now registers parent Ketch capabilities through Pi's native MCP 
 
 ## What changed
 
-- `index.ts` registers the default `ketch mcp serve` server only when another extension has not already registered that name. It schedules a session-owned readiness diagnostic, respects inactive codemode, and cancels its pending check on shutdown. No process or timer starts in the factory.
+- `extensions/ketch.ts` registers the default `ketch mcp serve` server only when another extension has not already registered that name. It schedules a session-owned readiness diagnostic, respects inactive codemode, and cancels its pending check on shutdown. No process or timer starts in the factory. `extensions/research.ts` is independently loadable and owns the public research tool without parent Ketch startup.
 - `lib/ketch.ts` shares the existing fixed researcher allowlist. Parent defaults expose search/scrape/code/docs through codemode and hide everything else. Researcher configuration returns a fresh Ketch-only native MCP configuration with four direct tools, no default file loading, and no indirect-tool autoactivation.
 - Capability checking distinguishes callable parent tools from the researcher's direct active declarations. A researcher with unexpected reachable tools fails closed. Missing capabilities have a finite, cancellable startup wait and an actionable message; this is not a timeout or budget on research.
-- The manifest declares only `./index.ts`. Native MCP is added as a pinned development-only dependency for public `StdioTransport` testing; production code uses the host-provided coding-agent API and native MCP extension, not a custom client.
+- The manifest declares only `./extensions/ketch.ts` and `./extensions/research.ts`. Native MCP is added as a pinned development-only dependency for public `StdioTransport` testing; production code uses the host-provided coding-agent API and native MCP extension, not a custom client.
 
 ## Verification setup and observations
 

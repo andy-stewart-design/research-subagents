@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { setImmediate as nextTick, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import type { ExtensionAPI, McpServerConfig } from "@earendil-works/pi-coding-agent";
-import extension from "../index.ts";
+import extension from "../extensions/ketch.ts";
+import { createResearchExtension } from "../extensions/research.ts";
 import {
   KETCH_TOOLS, createKetchServerConfig, loadResearcherMcpConfig, validateParentKetchTransport, waitForKetchCapabilities,
   type KetchToolView,
@@ -18,7 +19,40 @@ const view = (exposure: "direct" | "deferred"): KetchToolView => ({
 
 test("manifest declares only the actual entry point", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(manifest.pi, { extensions: ["./index.ts"] });
+  assert.deepEqual(manifest.pi, { extensions: ["./extensions/ketch.ts", "./extensions/research.ts"] });
+});
+
+test("Ketch and research factories load independently and compose without duplicates", () => {
+  function load(order: (api: ExtensionAPI) => void) {
+    const servers: { name: string; config: McpServerConfig }[] = [];
+    const tools: string[] = [];
+    const handlers = new Map<string, number>();
+    const api = {
+      getMcpServers: () => servers,
+      registerMcpServer: (name: string, config: McpServerConfig) => servers.push({ name, config }),
+      registerTool: (definition: { name: string }) => tools.push(definition.name),
+      on: (name: string) => { handlers.set(name, (handlers.get(name) ?? 0) + 1); return () => {}; },
+      getAllTools: () => [], getActiveTools: () => [],
+    } as unknown as ExtensionAPI;
+    order(api);
+    return { servers, tools, handlers };
+  }
+  const ketchOnly = load(extension);
+  assert.deepEqual(ketchOnly.servers.map((server) => server.name), ["ketch"]);
+  assert.deepEqual(ketchOnly.tools, []);
+  const researchOnly = load(createResearchExtension());
+  assert.deepEqual(researchOnly.servers, []);
+  assert.deepEqual(researchOnly.tools, ["research"]);
+  for (const order of [
+    (api: ExtensionAPI) => { extension(api); createResearchExtension()(api); },
+    (api: ExtensionAPI) => { createResearchExtension()(api); extension(api); },
+  ]) {
+    const both = load(order);
+    assert.deepEqual(both.servers.map((server) => server.name), ["ketch"]);
+    assert.deepEqual(both.tools, ["research"]);
+    assert.equal(both.handlers.get("session_start"), 1);
+    assert.equal(both.handlers.get("session_shutdown"), 2);
+  }
 });
 
 test("transport-changing parent Ketch overrides are rejected before delegated research", () => {
@@ -138,7 +172,7 @@ test("factory registers default Ketch only; existing extension-owned servers are
   const fresh = fakeApi();
   extension(fresh.api);
   assert.deepEqual(fresh.registrations, [{ name: "ketch", config: createKetchServerConfig("codemode") }]);
-  assert.deepEqual([...fresh.handlers.keys()], ["tool_call", "session_start", "session_shutdown"]);
+  assert.deepEqual([...fresh.handlers.keys()], ["session_start", "session_shutdown"]);
   const existing = fakeApi(true);
   extension(existing.api);
   assert.deepEqual(existing.registrations, []);

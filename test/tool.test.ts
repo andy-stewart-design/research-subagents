@@ -6,7 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionToolContext, McpServerConfig } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../lib/config.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
-import { createResearchExtension } from "../index.ts";
+import { createResearchExtension } from "../extensions/research.ts";
 import { ResearchRunner } from "../lib/runner.ts";
 import type { SessionOutcome } from "../lib/session.ts";
 
@@ -87,17 +87,11 @@ test("an incompatible Ketch backend blocks only researcher, not local Scout", as
     () => parseConfig({}),
     () => [{ name: "ketch", config: { command: "custom-ketch" } }],
   );
-  const notices: string[] = [];
-  await harness.handlers.get("session_start")!({}, {
-    ...harness.context,
-    ui: { notify: (message: string) => notices.push(message) },
-  });
   const scout = await harness.tool.execute("research-scout", { agent: "scout", task: "local question" }, undefined, undefined, harness.context);
   assert.equal(scout.structuredContent.status, "completed");
   const researcher = await harness.tool.execute("researcher", { agent: "researcher", task: "web question" }, undefined, undefined, harness.context);
   assert.equal(researcher.isError, true);
   assert.match(researcher.content[0].text, /Ketch backend configuration differs/);
-  assert.equal(notices.length, 1);
 });
 
 test("public research marks failed, cancelled, and timed-out child outcomes as tool errors", async () => {

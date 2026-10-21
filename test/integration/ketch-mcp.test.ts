@@ -11,7 +11,7 @@ import {
   ModelRuntime, SessionManager, SettingsManager,
   type AgentSession, type ExtensionError, type ExtensionFactory, type LoadedMcpConfig,
 } from "@earendil-works/pi-coding-agent";
-import entryPoint from "../../index.ts";
+import ketchEntryPoint from "../../extensions/ketch.ts";
 import { KETCH_TOOLS, createResearcherMcpExtension, waitForKetchCapabilities } from "../../lib/ketch.ts";
 
 const fixtureFile = fileURLToPath(new URL("../fixtures/fake-mcp-server.mjs", import.meta.url));
@@ -82,7 +82,7 @@ async function setup(t: TestContext, options: SetupOptions = {}) {
   };
   const mode = options.mode ?? "parent";
   const factories: ExtensionFactory[] = mode === "parent"
-    ? [createCodemodeExtension({ mode: "on" }), createMcpExtension({ loadConfig: () => configured, createTransport, logPath: join(root, "mcp.log") }), entryPoint]
+    ? [createCodemodeExtension({ mode: "on" }), createMcpExtension({ loadConfig: () => configured, createTransport, logPath: join(root, "mcp.log") }), ketchEntryPoint]
     : [createResearcherMcpExtension({ createTransport, logPath: join(root, "mcp.log") })];
   if (options.unrelated) factories.push((pi) => pi.registerMcpServer("unrelated", { command: "unrelated-user-tool", exposure: "direct" }));
   const settingsManager = SettingsManager.inMemory({ defaultTools: ["read"] });
@@ -129,7 +129,7 @@ test("parent Ketch is callable programmatically through native wrappers without 
   await harness.ready();
   assert.ok(harness.session.getActiveToolNames().includes("read"));
   assert.ok(harness.session.getActiveToolNames().includes("codemode"));
-  assert.ok(harness.session.getAllTools().some((tool) => tool.name === "research"));
+  assert.ok(!harness.session.getAllTools().some((tool) => tool.name === "research"));
   for (const name of KETCH_TOOLS) {
     assert.ok(!harness.session.getActiveToolNames().includes(name));
     const args = name.endsWith("scrape") ? { url: "https://example.test/page", max_chars: 6000 } : { query: "question", limit: 5 };

@@ -4,7 +4,8 @@
   "private": true,
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./extensions/ketch.ts",
+      "./extensions/research.ts"
     ]
   },
   "type": "module",

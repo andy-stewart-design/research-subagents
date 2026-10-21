@@ -11,10 +11,13 @@ import {
   type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import { StdioTransport, type McpTransport } from "@earendil-works/pi-mcp";
-import { PROFILES } from "./profiles.ts";
-
 export const KETCH_SERVER = "ketch";
-export const KETCH_TOOLS = PROFILES.researcher.tools;
+export const KETCH_TOOLS: readonly string[] = Object.freeze([
+  "mcp__ketch__search",
+  "mcp__ketch__scrape",
+  "mcp__ketch__code",
+  "mcp__ketch__docs",
+]);
 export const KETCH_STARTUP_MS = 10_000;
 const TOOL_PREFIX = "mcp__ketch__";
 

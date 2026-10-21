@@ -4,7 +4,7 @@
 
 **Verified for Step 2.2.** The final `npm run check` passed typecheck, **77 unit tests and 22 integration tests** (99 total), with **no skips** on this platform. This step adds 17 session tests, 4 Scout prerequisite tests, and 13 native isolation tests. `npm ls` confirms the Pi 1.1.0 family; the new host-provided `pi-ai` peer has a pinned 1.1.0 development copy, deduplicated with agent-core/coding-agent. Installation was package-local with lifecycle scripts disabled.
 
-`lib/session.ts` now provides a real fresh-session adapter. `index.ts` remains the Ketch-only entry point: no public delegation tool, shared queue, safety deadline, or parent-shutdown run registry was added. Step 2.3 and G2 remain Pending. Live backend/model quality, actual CLI/Jiti loading, and TUI acceptance remain Phase 3 work.
+`lib/session.ts` now provides a real fresh-session adapter. The parent Ketch and public research responsibilities are now separate extension entry points; this evidence records the child adapter before the public delegation tool, shared queue, safety deadline, and parent-shutdown run registry were added. Step 2.3 and G2 remain Pending. Live backend/model quality, actual CLI/Jiti loading, and TUI acceptance remain Phase 3 work.
 
 ## Implementation boundary
 
