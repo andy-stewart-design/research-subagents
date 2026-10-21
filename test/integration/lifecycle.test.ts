@@ -77,7 +77,7 @@ async function setup(t: TestContext, mode: "unresponsive" | "hang-call") {
   const options: ResearchSessionOptions = {
     cwd, workspaceDir: cwd, agentDir,
     parent: { model: { provider, id: modelId } },
-    config: parseConfig({}),
+    config: parseConfig({ profiles: { researcher: { model: `${provider}/${modelId}`, thinking: "max" } } }),
   };
   return { root, options, services, pids, get requests() { return requests; } };
 }

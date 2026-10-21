@@ -32,7 +32,7 @@ From the repository root:
 npm run check
 ```
 
-Passed: typecheck, **96 unit tests**, and **27 integration tests** (123 total), with no skips. The integration total includes the disposable Pi/Jiti loading check. Native lifecycle, bounded reports, cancellation/timeout, parent-precedence validation, Scout independence, and hostile-descendant cleanup remain passing.
+Passed: typecheck, **99 unit tests**, and **27 integration tests** (126 total), with no skips. The integration total includes the disposable Pi/Jiti loading check. Native lifecycle, bounded reports, cancellation/timeout, parent-precedence validation, Scout independence, profile/domain mismatch fail-closed behavior, frontmatter model defaults, and hostile-descendant cleanup remain passing.
 
 ## Actual user setup and smoke test
 

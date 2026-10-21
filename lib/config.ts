@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { PROFILE_NAMES, getProfile, type ProfileName } from "./profiles.ts";
+import { PROFILE_NAMES, getProfile, type ProfileDefaults, type ProfileName } from "./profiles.ts";
 
 export const CONFIG_FILENAME = "research-subagents.json";
 export const DEFAULT_MAX_CONCURRENCY = 2;
@@ -117,10 +117,11 @@ export function selectModel(
   name: ProfileName,
   config: ResearchConfig,
   parent: DispatchDefaults,
+  defaults: ProfileDefaults = {},
 ): ModelSelection {
   getProfile(name);
   const override = config.profiles[name];
-  const model = override?.model;
+  const model = override?.model ?? defaults.model;
   const separator = model?.indexOf("/") ?? -1;
   const provider = model !== undefined ? model.slice(0, separator) : parent.model?.provider;
   const modelId = model !== undefined ? model.slice(separator + 1) : parent.model?.id;
@@ -133,7 +134,7 @@ export function selectModel(
       `No valid model selected for ${name}: select a parent model or configure profiles.${name}.model as provider/id.`,
     );
   }
-  const thinkingLevel = override?.thinking ?? parent.thinkingLevel;
+  const thinkingLevel = override?.thinking ?? defaults.thinking ?? parent.thinkingLevel;
   return {
     provider,
     modelId,

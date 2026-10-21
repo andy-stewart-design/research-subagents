@@ -10,7 +10,7 @@ import {
   PROFILES,
   ResearchInputSchema,
   getProfile,
-  loadProfilePrompt,
+  loadProfileDefaults, loadProfilePrompt,
   parseResearchInput,
   type ProfileName,
 } from "../lib/profiles.ts";
@@ -75,6 +75,12 @@ test("unknown runtime names cannot select a profile or escape bundled prompt pat
     assert.throws(() => getProfile(name), /Unknown research profile/);
     assert.throws(() => loadProfilePrompt(name), /Unknown research profile/);
   }
+});
+
+test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {
+  assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
+  assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
+  assert.doesNotMatch(loadProfilePrompt("researcher"), /gpt-5\.6-luna/);
 });
 
 test("prompts load from bundled resources, not cwd or local agent files", () => {

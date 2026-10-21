@@ -63,7 +63,7 @@ or:
 {"agent":"researcher","task":"Compare the official API documentation with the current implementation and cite sources and gaps."}
 ```
 
-The input has exactly two fields: `agent` (`scout` or `researcher`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript.
+The input has exactly two fields: `agent` (`scout` or `researcher`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious profile mismatches: local paths cannot be sent to Researcher, external URLs cannot be sent to Scout, and a Researcher child that produces no Ketch lookup is not accepted as a sourced report.
 
 For researcher dispatches, an effective global or trusted project Ketch file entry wins over extension registrations, matching native Pi precedence. If that winning backend changes the command, arguments, environment, working directory, URL, or transport from plain `ketch mcp serve`, research fails with an actionable diagnostic. Scout is not blocked by Ketch configuration conflicts. If no parent Ketch entry exists, the researcher still proceeds with its independent child-owned configuration.
 
@@ -95,7 +95,7 @@ Example:
 
 Defaults are concurrency **2** and **no research deadline**. A configured `timeoutMs` starts only after queued work receives a slot. Cancellation or timeout interrupts the child, waits for owned cleanup, and returns a truthful bounded error; the first interruption cause wins. This is separate from native MCP request/startup timeouts.
 
-When no profile override is supplied, the child inherits the dispatching parent's provider/model and thinking level. Overrides must use `provider/model` and a supported thinking level. Unavailable or unauthenticated models fail without fallback.
+Agent files may also carry bundled frontmatter defaults. The bundled Scout and Researcher default to `openai-codex/gpt-5.6-luna` with `high` thinking; an explicit `research-subagents.json` profile override wins, followed by parent provider/model and thinking inheritance. Overrides must use `provider/model` and a supported thinking level. Unavailable or unauthenticated models fail without fallback.
 
 ## Safety and reports
 

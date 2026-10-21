@@ -150,6 +150,16 @@ const parent = Object.freeze({
   thinkingLevel: "high" as const,
 });
 
+test("profile-file model defaults are used and explicit config overrides them", () => {
+  const parent = { model: { provider: "parent", id: "model" }, thinkingLevel: "high" as const };
+  assert.deepEqual(selectModel("researcher", parseConfig({}), parent, { model: "openai-codex/gpt-5.6-luna", thinking: "low" }), {
+    provider: "openai-codex", modelId: "gpt-5.6-luna", thinkingLevel: "low",
+  });
+  assert.deepEqual(selectModel("researcher", parseConfig({ profiles: { researcher: { model: "override/model", thinking: "off" } } }), parent, {
+    model: "openai-codex/gpt-5.6-luna", thinking: "low",
+  }), { provider: "override", modelId: "model", thinkingLevel: "off" });
+});
+
 test("model selection inherits exact parent provider, ID, and thinking without mutation", () => {
   const config = parseConfig({});
   const snapshot = JSON.stringify({ config, parent });

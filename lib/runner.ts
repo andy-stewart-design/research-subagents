@@ -1,5 +1,6 @@
 import { createDiagnosticHandoff } from "./report.ts";
-import { parseResearchInput, type ResearchInput } from "./profiles.ts";
+import { selectModel } from "./config.ts";
+import { loadProfileDefaults, parseResearchInput, type ResearchInput } from "./profiles.ts";
 import {
   runResearchSession,
   type ResearchSessionOptions,
@@ -18,6 +19,8 @@ export interface ResearchRunStatus {
   readonly startedAt?: number;
   readonly finishedAt?: number;
   readonly elapsedMs?: number;
+  readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly activity?: SessionOutcome["activity"];
 }
 
@@ -43,6 +46,8 @@ interface RunEntry {
   completion: Promise<void>;
   state: "queued" | "running";
   startedAt?: number;
+  model?: string;
+  thinkingLevel?: string;
   timer: ReturnType<typeof setTimeout> | undefined;
   timedOut: boolean;
   interruption: "cancelled" | "timed_out" | undefined;
@@ -55,6 +60,18 @@ const MAX_TIMER_MS = 2_147_483_647;
 
 function initialActivity(): SessionOutcome["activity"] {
   return { assistantMessages: 0, toolCalls: 0 };
+}
+
+function selectedModel(input: ResearchInput, options: ResearchSessionOptions): { model?: string; thinkingLevel?: string } {
+  try {
+    const selection = selectModel(input.agent, options.config, options.parent, loadProfileDefaults(input.agent));
+    return {
+      model: `${selection.provider}/${selection.modelId}`,
+      ...(selection.thinkingLevel !== undefined ? { thinkingLevel: selection.thinkingLevel } : {}),
+    };
+  } catch {
+    return {};
+  }
 }
 
 function interruptionMessage(message: string, result?: SessionOutcome): string {
@@ -141,10 +158,12 @@ export class ResearchRunner {
     }
 
     const queuedAt = this.now();
+    const display = selectedModel(parsed, options);
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
       const entry: RunEntry = {
         id: this.nextId++, input: parsed, options, resolve, queuedAt, controller, onStatus,
+        ...display,
         state: "queued", completion: Promise.resolve(), timer: undefined, timedOut: false,
         interruption: undefined, cancellationRequested: false, shutdownRequested: false, settled: false,
       };
@@ -297,6 +316,8 @@ export class ResearchRunner {
     const status: ResearchRunStatus = {
       id: entry.id, state, agent: entry.input.agent, task: entry.input.task,
       queuedAt: entry.queuedAt,
+      ...(entry.model !== undefined ? { model: entry.model } : {}),
+      ...(entry.thinkingLevel !== undefined ? { thinkingLevel: entry.thinkingLevel } : {}),
       ...(startedAt !== undefined ? { startedAt, elapsedMs: now - startedAt } : {}),
       ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
         ? { finishedAt: now } : {}),

@@ -193,6 +193,9 @@ test("empty, thinking-only, absent, event-only and unfinished-tool answers fail;
   ];
   for (const script of scripts) assert.equal((await runResearchSession({ agent: "scout", task: "question" }, opts, harness(script).services)).status, "failed");
   assert.equal((await runResearchSession({ agent: "scout", task: "question" }, opts, harness().services)).status, "completed");
+  const researcher = await runResearchSession({ agent: "researcher", task: "external question" }, opts, harness().services);
+  assert.equal(researcher.status, "failed");
+  assert.match(researcher.handoff.text, /without using an external Ketch lookup/);
 });
 
 test("compaction cannot replace the final report and recovery omission cannot resurrect stale narration", async (t) => {

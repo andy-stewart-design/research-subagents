@@ -21,12 +21,19 @@ test("research rendering keeps default output compact and strips unsafe task dis
 test("progress and expanded result rendering expose status/activity without a transcript", () => {
   const status = {
     id: 1, state: "running" as const, agent: "researcher" as const, task: "question",
-    queuedAt: 0, startedAt: 10, activity: { assistantMessages: 1, toolCalls: 2, latestTool: "mcp__ketch__search" },
+    queuedAt: 0, startedAt: 10, elapsedMs: 40_960,
+    model: "openai-codex/gpt-5.6-luna", thinkingLevel: "low",
+    activity: { assistantMessages: 1, toolCalls: 2, latestTool: "mcp__ketch__search" },
   };
   assert.match(formatResearchProgress(status), /running/);
   assert.match(formatResearchProgress(status), /mcp__ketch__search/);
+  assert.match(formatResearchProgress(status), /41s/);
+  assert.doesNotMatch(formatResearchProgress(status), /ms/);
+  assert.match(formatResearchProgress(status), /gpt-5\.6-luna/);
+  assert.match(formatResearchProgress(status), /; low/);
   const details: ResearchToolDetails = {
     status: "completed", agent: "researcher", task: "question",
+    model: "openai-codex/gpt-5.6-luna", thinkingLevel: "low",
     activity: { assistantMessages: 2, toolCalls: 3, latestTool: "mcp__ketch__scrape" },
   };
   const component = renderResearchResult({
@@ -34,6 +41,8 @@ test("progress and expanded result rendering expose status/activity without a tr
   }, { expanded: true, isPartial: false }, theme);
   const text = component.render(40).join("\n");
   assert.match(text, /Research completed/);
+  assert.match(text, /gpt-5\.6-luna/);
+  assert.match(text, /· low/);
   assert.match(text, /Evidence only/);
   assert.doesNotMatch(text, /reasoning|tool transcript/i);
 });

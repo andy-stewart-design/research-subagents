@@ -94,6 +94,17 @@ test("an incompatible Ketch backend blocks only researcher, not local Scout", as
   assert.match(researcher.content[0].text, /Ketch backend configuration differs/);
 });
 
+test("profile/domain mismatches fail closed before a child starts", async () => {
+  let started = false;
+  const harness = extensionHarness(async () => { started = true; return outcome(); });
+  const result = await harness.tool.execute("research-1", {
+    agent: "researcher", task: "Audit /Users/example/project/package.json and its local source files.",
+  }, undefined, undefined, harness.context);
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /external-only/);
+  assert.equal(started, false);
+});
+
 test("public research marks failed, cancelled, and timed-out child outcomes as tool errors", async () => {
   for (const status of ["failed", "cancelled", "timed_out"] as const) {
     const harness = extensionHarness(async () => outcome(status));

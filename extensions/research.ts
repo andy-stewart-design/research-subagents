@@ -25,6 +25,19 @@ const ResearchResultSchema = Type.Object({
 
 type ResearchToolResult = AgentToolResult<ResearchToolDetails>;
 
+const LOCAL_PATH_IN_TASK = /(?:^|\s)(?:~\/|\.\.?\/|\/(?:Users|home|tmp|private|var|opt|Volumes)\/|[A-Za-z]:[\\/])\S*/u;
+const EXTERNAL_URL_IN_TASK = /\bhttps?:\/\//u;
+
+function profileTaskError(input: { agent: "scout" | "researcher"; task: string }): string | undefined {
+  if (input.agent === "researcher" && LOCAL_PATH_IN_TASK.test(input.task)) {
+    return "Researcher is external-only and cannot inspect local paths. Delegate local repository/file work to scout instead.";
+  }
+  if (input.agent === "scout" && EXTERNAL_URL_IN_TASK.test(input.task)) {
+    return "Scout is local-only and cannot retrieve external URLs. Delegate web/documentation work to researcher instead.";
+  }
+  return undefined;
+}
+
 function parentDefaults(ctx: ExtensionToolContext): DispatchDefaults {
   return {
     ...(ctx.model ? { model: { provider: ctx.model.provider, id: ctx.model.id } } : {}),
@@ -60,6 +73,8 @@ function finalDetails(
     task: previewTask(input.task),
     activity: finalStatus?.activity ?? outcome.activity,
     ...(finalStatus?.elapsedMs !== undefined ? { elapsedMs: finalStatus.elapsedMs } : {}),
+    ...(finalStatus?.model !== undefined ? { model: finalStatus.model } : {}),
+    ...(finalStatus?.thinkingLevel !== undefined ? { thinkingLevel: finalStatus.thinkingLevel } : {}),
     ...(outcome.handoff.truncated ? { truncated: true } : {}),
     ...(outcome.handoff.reportPath ? { reportPath: outcome.handoff.reportPath } : {}),
   };
@@ -143,9 +158,10 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     pi.registerTool({
       name: RESEARCH_TOOL,
       label: "research",
-      description: "Delegate multi-step read-only local or external investigations to a fresh isolated child; use direct Ketch only for a single focused lookup.",
+      description: "Delegate multi-step read-only investigations to a fresh isolated child: choose Scout for local repository work and Researcher for external web/docs work; use direct Ketch only for a single focused lookup.",
       promptSnippet: "delegate multi-step investigations to a fresh isolated context",
       promptGuidelines: [
+        "Choose scout for local paths, repository code, and file audits; choose researcher only for external web/docs/OSS research. If a task needs both, make separate delegated calls rather than sending local work to researcher.",
         "For investigations spanning multiple files, external sources, or evidence synthesis, delegate to research instead of reproducing the work in the parent with read, bash, or codemode.",
         "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
@@ -159,6 +175,8 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
         const input = parseResearchInput(params);
         try {
+          const taskError = profileTaskError(input);
+          if (taskError) return setupFailure(input, new Error(taskError));
           const agentDir = getAgentDirForExtension();
           if (input.agent === "researcher") {
             const parentKetchError = validateParentKetchTransport(pi, ctx.cwd, agentDir, ctx.isProjectTrusted());

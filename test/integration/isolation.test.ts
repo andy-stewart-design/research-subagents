@@ -66,7 +66,13 @@ async function fixture(t: TestContext) {
     models: [{ id: modelId, name: "Offline fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
   } } }));
   const parent = { model: { provider, id: modelId }, thinkingLevel: "max" as const, messages: ["PARENT_HISTORY_SENTINEL"], activeTools: ["write", "codemode"] };
-  const options: ResearchSessionOptions = { cwd, workspaceDir: cwd, agentDir, parent, config: parseConfig({}) };
+  const options: ResearchSessionOptions = {
+    cwd, workspaceDir: cwd, agentDir, parent,
+    config: parseConfig({ profiles: {
+      scout: { model: `${provider}/${modelId}`, thinking: "max" },
+      researcher: { model: `${provider}/${modelId}`, thinking: "max" },
+    } }),
+  };
   return { root, cwd, agentDir, installerLog, extensionLog, parent, options };
 }
 

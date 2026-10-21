@@ -306,7 +306,7 @@ Verification:
 - Manual: Inspect default/expanded render snapshots and documented Ctrl+C semantics. Interactive/model/backend proof remains Step 3.2.
 
 Completion gate: Passed. Public registration and its consumers/tests landed atomically; the tool exposes only the fixed two-profile input, keeps private child/session behavior behind the runner, and preserves direct Ketch calls without requiring delegation.
-Evidence: The standalone-entry-point refactor preserves the public schema/runner/result contract, compact renderer, shutdown ownership, parent/child Ketch validation, and adversarial lifecycle/reporting fixes. `npm test` passes 96 unit tests and native integration remains 26 tests; the complete post-refactor gate is recorded during Step 3.2 loading verification. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
+Evidence: The standalone-entry-point refactor preserves the public schema/runner/result contract, compact renderer, shutdown ownership, parent/child Ketch validation, and adversarial lifecycle/reporting fixes. `npm test` passes 99 unit tests and native integration remains 27 tests; the complete post-refactor gate is recorded during Step 3.2 loading verification. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred.
 
 ### Step 3.2 — Document local setup and verify actual user-facing behavior
 
@@ -332,7 +332,7 @@ Tasks:
 
 Verification:
 
-- Automated: from `.`, `npm run check`, including the newly added loading check. **Passed:** typecheck, 96 unit tests, and 27 integration tests (123 total, no skips). Disposable explicit loader/manifest composition succeeds in Ketch-only, research-only, both, and reversed order; reference directories/user files remain untouched. This does not prove real web/model behavior.
+- Automated: from `.`, `npm run check`, including the newly added loading check. **Passed:** typecheck, 99 unit tests, and 27 integration tests (126 total, no skips). Disposable explicit loader/manifest composition succeeds in Ketch-only, research-only, both, and reversed order; reference directories/user files remain untouched. This does not prove real web/model behavior.
 - Manual, approval-required: create a disposable project and a private directory named by `$SMOKE_AGENT_DIR`, populate only its explicitly approved credential setup, and ensure Ketch is installed. From the disposable project, start `PI_CODING_AGENT_DIR="$SMOKE_AGENT_DIR" pi --no-extensions --extension builtin:mcp --extension builtin:codemode --extension /absolute/path/to/research-subagents/extensions/ketch.ts --extension /absolute/path/to/research-subagents/extensions/research.ts` (substitute the actual local package path). For independent checks, load only one of those two feature paths. Confirm those explicit built-ins are enabled rather than relying on ambient extensions. Run the tasks/calls above and observe useful cited final reports, no child transcript handoff, truthful failures/interruptions, unchanged fixture repository and existing configuration/model selections, and clean owned-process teardown. A fake provider does not satisfy this check.
 
 Completion gate: **Blocked.** Documentation matches observed behavior and deterministic/loading checks pass, but required live/backend/TUI checks lack approval, credentials, and human access. No permanent installation is required to finish this gate.

@@ -176,5 +176,7 @@ test("status and activity observers are bounded side channels and cannot break e
   const result = await runner.run({ agent: "scout", task: "observed" }, options("observed"));
   assert.equal(result.status, "completed");
   assert.deepEqual(statuses.map((status) => status.state), ["queued", "running", "running", "completed"]);
+  assert.equal(statuses[0]?.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(statuses[0]?.thinkingLevel, "high");
   assert.equal(statuses[2]?.activity?.latestTool, "read");
 });

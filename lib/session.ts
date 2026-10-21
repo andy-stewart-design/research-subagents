@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { selectModel, type DispatchDefaults, type ModelSelection, type ResearchConfig } from "./config.ts";
 import { createResearcherMcpExtension, waitForKetchCapabilities } from "./ketch.ts";
-import { getProfile, loadProfilePrompt, parseResearchInput } from "./profiles.ts";
+import { getProfile, loadProfileDefaults, loadProfilePrompt, parseResearchInput } from "./profiles.ts";
 import { createDiagnosticHandoff, createReportHandoff, type ReportHandoff } from "./report.ts";
 import { createScoutTools, hasScoutBinary, requireScoutBinary, type ScoutBinaryCheck } from "./scout.ts";
 
@@ -197,6 +197,8 @@ export async function runResearchSession(
     signal?.throwIfAborted();
     const { agent, task } = parseResearchInput(input);
     const profile = getProfile(agent);
+    const profilePrompt = loadProfilePrompt(agent);
+    const profileDefaults = loadProfileDefaults(agent);
     for (const path of [cwd, agentDir, workspaceDir]) {
       if (!isAbsolute(path)) throw new Error("Research session requires absolute workspace, cwd, and agent directory paths.");
     }
@@ -204,7 +206,7 @@ export async function runResearchSession(
       requireScoutBinary("rg", services.hasScoutBinary);
       requireScoutBinary("fd", services.hasScoutBinary);
     }
-    const selection = selectModel(agent, options.config, options.parent);
+    const selection = selectModel(agent, options.config, options.parent, profileDefaults);
     const runtime = await services.createModelRuntime(agentDir, selection, signal);
     signal?.throwIfAborted();
     const modelError = runtime.getError();
@@ -232,7 +234,7 @@ export async function runResearchSession(
     const resourceLoader = new DefaultResourceLoader({
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      systemPrompt: loadProfilePrompt(agent), appendSystemPrompt: [],
+      systemPrompt: profilePrompt, appendSystemPrompt: [],
       extensionFactories: agent === "researcher"
         ? [createResearcherMcpExtension({ logPath: devNull, ...services.mcpOptions })] : [],
     });
@@ -291,6 +293,9 @@ export async function runResearchSession(
     }
     report = final.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     if (!report.trim()) throw new Error("Child finished with an empty final report.");
+    if (agent === "researcher" && activity.toolCalls === 0) {
+      throw new Error("Researcher finished without using an external Ketch lookup; no sourced report is claimed. Use scout for local repository work.");
+    }
   } catch (error) {
     failure = errorText(error);
   } finally {

@@ -15,12 +15,21 @@ export interface ResearchToolDetails {
   readonly task: string;
   readonly activity?: SessionActivity;
   readonly elapsedMs?: number;
+  readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly truncated?: boolean;
   readonly reportPath?: string;
 }
 
 const MAX_TASK_PREVIEW = 240;
 const MAX_CALL_PREVIEW_WIDTH = 96;
+
+function formatElapsed(elapsedMs: number): string {
+  const seconds = elapsedMs / 1_000;
+  return seconds < 10
+    ? `${seconds.toFixed(1).replace(/\.0$/u, "")}s`
+    : `${Math.round(seconds)}s`;
+}
 
 export function previewTask(task: string): string {
   const singleLine = stripTerminalSequences(task).replace(/[\u0000-\u001f\u007f\s]+/gu, " ").trim();
@@ -37,15 +46,19 @@ export function detailsFromStatus(status: ResearchRunStatus): ResearchToolDetail
     task: previewTask(status.task ?? ""),
     ...(status.activity ? { activity: status.activity } : {}),
     ...(status.elapsedMs !== undefined ? { elapsedMs: status.elapsedMs } : {}),
+    ...(status.model !== undefined ? { model: status.model } : {}),
+    ...(status.thinkingLevel !== undefined ? { thinkingLevel: status.thinkingLevel } : {}),
   };
 }
 
 export function formatResearchProgress(status: ResearchRunStatus): string {
+  const model = status.model ? `; model ${status.model}` : "";
+  const thinking = status.thinkingLevel ? `; ${status.thinkingLevel}` : "";
   const activity = status.activity?.latestTool
     ? `; latest tool ${status.activity.latestTool}`
     : status.activity ? `; ${status.activity.toolCalls} tool call(s)` : "";
-  const elapsed = status.elapsedMs !== undefined ? `; ${Math.round(status.elapsedMs)}ms` : "";
-  return `Research ${status.state}: ${status.agent ?? "research"}${activity}${elapsed}`;
+  const elapsed = status.elapsedMs !== undefined ? `; ${formatElapsed(status.elapsedMs)}` : "";
+  return `Research ${status.state}: ${status.agent ?? "research"}${model}${thinking}${activity}${elapsed}`;
 }
 
 export function renderResearchCall(args: ResearchInput, theme: Theme): Component {
@@ -73,11 +86,13 @@ export function renderResearchResult(
   if (options.isPartial) {
     if (!details) return new Text(theme.fg("warning", "Research running…"), 0, 0);
     let progress = `Research ${details.status}`;
+    if (details.model) progress += ` · ${details.model}`;
+    if (details.thinkingLevel) progress += ` · ${details.thinkingLevel}`;
     if (details.activity) {
       progress += ` · ${details.activity.toolCalls} tool call(s)`;
       if (details.activity.latestTool) progress += ` · ${details.activity.latestTool}`;
     }
-    if (details.elapsedMs !== undefined) progress += ` · ${Math.round(details.elapsedMs)}ms`;
+    if (details.elapsedMs !== undefined) progress += ` · ${formatElapsed(details.elapsedMs)}`;
     return new Text(theme.fg("warning", progress), 0, 0);
   }
   if (!details) {
@@ -89,11 +104,13 @@ export function renderResearchResult(
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";
   let text = theme.fg(statusColor, `Research ${details.status}`);
+  if (details.model) text += theme.fg("dim", ` · ${details.model}`);
+  if (details.thinkingLevel) text += theme.fg("dim", ` · ${details.thinkingLevel}`);
   if (details.activity) {
     text += theme.fg("dim", ` · ${details.activity.toolCalls} tool call(s)`);
     if (details.activity.latestTool) text += theme.fg("dim", ` · ${details.activity.latestTool}`);
   }
-  if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${Math.round(details.elapsedMs)}ms`);
+  if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${formatElapsed(details.elapsedMs)}`);
   if (details.truncated) text += theme.fg("warning", " · report clipped");
   if (details.reportPath && options.expanded) text += `\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
   if (options.expanded) {
