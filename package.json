@@ -17,11 +17,13 @@
     "check": "npm run typecheck && npm test && npm run test:integration"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-coding-agent": "1.1.0",
     "@earendil-works/pi-mcp": "1.1.0",

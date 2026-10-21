@@ -4,7 +4,7 @@
 
 - Governing spec: [spec.md](spec.md), requirements R1–R12 and acceptance criteria AC1–AC16.
 - Additional governing clarification: the user reaffirmed that research has **no timeout by default**, with an optional configurable safety timeout available if long sessions become an issue.
-- Delivery state: In progress. Phase 0, Phase 1, and Step 2.1 are Verified; G0 and G1 passed. Steps 2.2–3.2 and G2/G3 remain Pending. The entry point provides Ketch MCP integration only; delegation is not registered yet.
+- Delivery state: In progress. Phase 0, Phase 1, and Steps 2.1–2.2 are Verified; G0 and G1 passed. Steps 2.3–3.2 and G2/G3 remain Pending. The entry point provides Ketch MCP integration only; the tested child adapter is not registered as delegation yet.
 - Acceptance or release still pending: Full feature acceptance, end-to-end report integration, native-runtime checks, and approval-required live/TUI checks. Scoped foundation checks are recorded below. Publication and permanent installation are not part of this plan.
 - Blockers: No unresolved product decisions or foundation blockers. Live acceptance requires explicit approval, available model/Ketch credentials, and human TUI access. Native child isolation and MCP teardown are mandatory later gates, not assumed successes.
 
@@ -210,7 +210,7 @@ Evidence: `npm run check` passed typecheck, 56 unit tests, and 9 native integrat
 
 ### Step 2.2 — Run a fresh, strictly configured SDK child and select its final answer
 
-Status: Pending
+Status: Verified
 Requirements / acceptance: R1–R6, R9, R11, R12; AC2, AC3, AC7, AC8, AC13, AC14 (automated portions), AC4/AC16 (session-isolation portions). Live/model-quality and final tool-pipeline portions remain in Phase 3.
 Depends on: Step 2.1.
 Review boundary: one real isolated session adapter with final-answer/error handling and baseline cleanup; no shared queue or public delegation registration yet.
@@ -218,17 +218,18 @@ Review boundary: one real isolated session adapter with final-answer/error handl
 Expected files:
 
 - `lib/session.ts` — add child SDK creation, readiness, model validation, event projection, and owned cleanup.
+- `lib/scout.ts`, `test/scout.test.ts` — guard native local-search prerequisites without auto-download, preserving native tool schemas/backends.
 - `test/session.test.ts` — add injected session/model fixtures for finalized answers, errors, recovery, and literal/large tasks.
 - `test/integration/isolation.test.ts` — add native SDK/resource-load/tool-reachability tests in disposable homes/repos.
 
 Tasks:
 
-- [ ] Create a child-owned model runtime, fresh history, captured dispatch `cwd`, and one seeded in-memory settings instance shared by loader/session with no package/resource sources. Suppress extensions/skills/templates/themes/context discovery, set the bundled profile as `systemPrompt` and `appendSystemPrompt: []`, and load only the explicit researcher MCP factory. Do not depend on `applyOverrides()` surviving loader reload.
-- [ ] Resolve the exact selected model and validate supported/auth availability before constructing a session; propagate thinking with SDK clamping. Fail unavailable selection without fallback or importing unrelated parent provider extensions.
-- [ ] Bind extensions, await the required tool set, and submit a literal, self-contained task only afterward. Prefix/encode task text so a leading `/mcp` or similar text is not executed as a command; do not expand parent history, file references, or templates automatically.
-- [ ] Subscribe before prompting; project only activity counters/latest tool name and finalized assistant outcome. Await overall prompt completion/recovery, concatenate all final text blocks, and reject empty/error/abort/output-limit/unfinished-tool outcomes instead of using earlier narration.
-- [ ] Use the handoff helper; aggregate reportable nested model usage once if available under the current tool-result contract, without a usage dashboard or double-counted nested results. Capture the extension error channel as well as promise rejections. Make cleanup idempotent: initiate cancellation without an idle/close deadlock, await child native extension/MCP shutdown before disposal, handle reported shutdown failures explicitly, and unsubscribe on every terminal/startup-failure path.
-- [ ] Test fresh-context sentinels, task literals/large input, exact reachable tools, user/project/package/system/append-prompt sentinels that must never enter the child, no configured-package installation, terminal-versus-recoverable errors, and a legitimate no-findings answer. Use real SDK setup for resource/tool isolation, injected session/provider responses for answer-state logic, and disposable installer-denial fixtures; name that proof boundary honestly.
+- [x] Create a child-owned model runtime, fresh history, captured dispatch `cwd`, and one seeded in-memory settings instance shared by loader/session with no package/resource sources. Suppress extensions/skills/templates/themes/context discovery, set the bundled profile as `systemPrompt` and `appendSystemPrompt: []`, and load only the explicit researcher MCP factory. Do not depend on `applyOverrides()` surviving loader reload.
+- [x] Resolve the exact selected model and validate supported/auth availability before constructing a session; propagate thinking with SDK clamping. Fail unavailable selection without fallback or importing unrelated parent provider extensions. Supply read-only credentials and an in-memory catalog to avoid native auth/cache file creation or mutation; a required credential refresh is an explicit parent/operator action, not child repair.
+- [x] Bind extensions, await the required tool set, and submit a literal, self-contained task only afterward. Require preinstalled Scout rg/fd backends before startup and guard native grep/find entry so a missing prerequisite cannot trigger Pi's automatic downloader. Prefix/encode task text so a leading `/mcp` or similar text is not executed as a command; do not expand parent history, file references, or templates automatically.
+- [x] Subscribe before prompting; project only activity counters/latest tool name and finalized assistant outcome. Await overall prompt completion/recovery, concatenate all final text blocks, and reject empty/error/abort/output-limit/unfinished-tool outcomes instead of using earlier narration. Read the final raw message on the active branch, not a next-request projection that may compact away the answer or omit a failed retry.
+- [x] Use the handoff helper; aggregate reportable nested model usage once if available under the current tool-result contract, without a usage dashboard or double-counted nested results. Capture the extension error channel as well as promise rejections. Make cleanup idempotent: initiate cancellation without an idle/close deadlock, await child native extension/MCP shutdown before disposal, handle reported shutdown failures explicitly, and unsubscribe on every terminal/startup-failure path.
+- [x] Test fresh-context sentinels, task literals/large input, exact reachable tools, user/project/package/system/append-prompt sentinels that must never enter the child, no configured-package installation, terminal-versus-recoverable errors, and a legitimate no-findings answer. Use real SDK setup for resource/tool isolation, injected session/provider responses for answer-state logic, and disposable installer-denial fixtures; name that proof boundary honestly.
 
 Verification:
 
@@ -236,7 +237,7 @@ Verification:
 - Manual: Review the isolated session's loader/settings inputs and emitted model context in fixtures. A scripted provider/session proves plumbing, not that a real model will always cite accurately or resist injection; live review stays pending.
 
 Completion gate: the adapter runs correctly against completed prerequisites, native isolation tests pass, and successful/error/recovery fixtures cannot leak interim transcript content or silently choose another model. Baseline cleanup must already work; lifecycle race hardening is not an excuse to leak until Step 2.3.
-Evidence: Not run.
+Evidence: Final `npm run check` passed typecheck, 77 unit tests, and 22 native integration tests (99 total, no skips), including 17 session tests, 4 Scout prerequisite tests, and 13 native isolation tests added here. Native setup/streams verified suppression across reload, literal/large tasks, exact tools, native search execution, missing-binary startup/per-call denial, clamping/overrides, retry settlement, read-only auth/cache behavior, responsive MCP PID exit, and unchanged fixture repo/agent/parent data; unit fixtures verified terminal/compaction/omission logic, usage, bounded handoff/overflow, and cleanup failures. [step-2.2.md](evidence/step-2.2.md) records the public stream-injection seam, read-only credential/config resolver, native auto-download guard, cache-layout sensitivity, and proof limits. No live model/Ketch service, permanent installation, personal configuration change, staging, or commit occurred. Shared queue/deadline/shutdown ownership, hostile lifecycle proof, and G2/G3 remain Pending.
 
 ### Step 2.3 — Add shared queue, cancellation, optional timeout, and shutdown ownership
 
@@ -322,7 +323,7 @@ Expected files:
 Tasks:
 
 - [ ] Document separate direct-Ketch and delegated workflows, two-profile input, inherited/overridden models, private overflow paths, no sandbox, no default timeout, optional timeout interruption semantics, and the difference between research deadlines and native request timeouts.
-- [ ] Document explicit local loading from the package directory, required Pi 1.1.0/Ketch v0.18.1 target prerequisites, backend/browser/model setup responsibilities, native MCP/codemode requirements, conflicting file-configured Ketch precedence, and actionable missing-tool/auth failures. Do not change the user's existing skill; explain that child guidance is bundled and independent of it.
+- [ ] Document explicit local loading from the package directory, required Pi 1.1.0/Ketch v0.18.1 target prerequisites, backend/browser/model setup responsibilities, preinstalled Scout rg/fd (or fdfind) prerequisites with no automatic downloads, native MCP/codemode requirements, conflicting file-configured Ketch precedence, and actionable missing-tool/auth failures. Explain read-only child authentication: refresh/sign in through the parent when needed; ephemeral parent keys/providers are not copied, and trusted configured credential commands remain ordinary Pi behavior, not sandboxed tools. Do not change the user's existing skill; explain that child guidance is bundled and independent of it.
 - [ ] Run the complete deterministic gate and actual local Pi extension loader in a disposable home/project; verify manifest scope and sibling helper/test files are not loaded as extensions. Ensure reference examples are not simultaneously auto-loaded and no real home is mutated.
 - [ ] After explicit live/model/web approval, use a controlled scratch repo and one-shot extension loading to perform a local scout task and a sourced researcher task. Exercise search, scrape, code, and docs programmatically; compare researcher capability/backend behavior, inspect concise citations/gaps, and read an overflow report if generated or injected for the check.
 - [ ] With human TUI access, observe queue/activity/expanded reports, cancel a running investigation, and confirm later work/parent Ketch still functions. Exercise a configured short safety timeout in the disposable setup; then remove it and confirm no research deadline is enabled. Observe noninteractive results separately.
@@ -376,7 +377,7 @@ No separate reference-example/workspace regression suite exists to run. Final re
 ## Deferred checks and accepted deviations
 
 - Accepted deviations: None. The SDK-session choice is explicitly permitted by the spec; it is recorded above, not a waiver of the context/process-cleanup contract. Process-exit-specific AC wording will be checked through equivalent SDK terminal/transport outcomes, with real native MCP process lifetime also tested; neither has been verified yet.
-- Dependency installation: performed locally for Step 1.1 with lifecycle scripts disabled and a package-local lockfile. Host libraries remain peer dependencies with target-version development copies; development overrides pin transitive Pi libraries to the inspected 1.1.0 generation. No permanent Pi package installation or user configuration change was performed.
+- Dependency installation: performed locally for package development with lifecycle scripts disabled and a package-local lockfile. Step 2.1 added the pinned native MCP testing dependency; Step 2.2 added the host-provided pi-ai peer/development copy for public model-store/stream APIs. Host libraries remain peer dependencies with target-version development copies; development overrides pin transitive Pi libraries to the inspected 1.1.0 generation. The installer-denial fixture invokes no real package manager. No permanent Pi package installation or user configuration change was performed.
 - Live model/Ketch backend, browser behavior when needed, real report quality/citations, and human TUI acceptance: not performed or waived. Keep Step 3.2's affected scope pending/blocked until approved credentials/access are available. Record an owned Accepted deviation only if the user later chooses to waive a check.
 - Broad compatibility: target the inspected Pi 1.1.0/Ketch v0.18.1 and current local platform. Do not imply other versions/platforms are verified. Architecture changes needed for another version require source review and the same isolation/lifecycle gates.
 - Hard budgets, enforced retrieval/network/tagging restrictions, reusable child memory, crawl/bookmarks, project profiles, richer UI, durable artifacts, automatic long-term artifact cleanup, and publication remain deferred as described in the spec.
