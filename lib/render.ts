@@ -58,7 +58,7 @@ export function formatResearchProgress(status: ResearchRunStatus): string {
     ? `; latest tool ${status.activity.latestTool}`
     : status.activity ? `; ${status.activity.toolCalls} tool call(s)` : "";
   const elapsed = status.elapsedMs !== undefined ? `; ${formatElapsed(status.elapsedMs)}` : "";
-  return `Research ${status.state}: ${status.agent ?? "research"}${model}${thinking}${activity}${elapsed}`;
+  return `Subagent ${status.state}: ${status.agent ?? "unknown"}${model}${thinking}${activity}${elapsed}`;
 }
 
 export function renderResearchCall(args: ResearchInput, theme: Theme): Component {
@@ -66,7 +66,7 @@ export function renderResearchCall(args: ResearchInput, theme: Theme): Component
   // The preview is plain text; strip those resets before applying theme colors.
   const task = stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
   return new Text(
-    `${theme.fg("toolTitle", theme.bold("research "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", ` — ${task}`) : ""}`,
+    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", ` — ${task}`) : ""}`,
     0,
     0,
   );
@@ -86,8 +86,8 @@ export function renderResearchResult(
 ): Component {
   const details = result.details;
   if (options.isPartial) {
-    if (!details) return new Text(theme.fg("warning", "Research running…"), 0, 0);
-    let progress = `Research ${details.status}`;
+    if (!details) return new Text(theme.fg("warning", "Subagent running…"), 0, 0);
+    let progress = `Subagent ${details.status}`;
     if (details.model) progress += ` · ${details.model}`;
     if (details.thinkingLevel) progress += ` · ${details.thinkingLevel}`;
     if (details.activity) {
@@ -100,12 +100,12 @@ export function renderResearchResult(
   if (!details) {
     const diagnostic = createDiagnosticHandoff(resultText(result)).text;
     const visible = options.expanded ? diagnostic : diagnostic.split("\n")[0] ?? diagnostic;
-    return new Text(theme.fg("error", visible || "Research result unavailable."), 0, 0);
+    return new Text(theme.fg("error", visible || "Subagent result unavailable."), 0, 0);
   }
 
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";
-  let text = theme.fg(statusColor, `Research ${details.status}`);
+  let text = theme.fg(statusColor, `Subagent ${details.status}`);
   if (details.model) text += theme.fg("dim", ` · ${details.model}`);
   if (details.thinkingLevel) text += theme.fg("dim", ` · ${details.thinkingLevel}`);
   if (details.activity) {

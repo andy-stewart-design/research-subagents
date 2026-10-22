@@ -61,7 +61,7 @@ test("progress and expanded result rendering expose status/activity without a tr
     content: [{ type: "text", text: "## Answer\nEvidence only." }], details,
   }, { expanded: true, isPartial: false }, theme);
   const text = component.render(40).join("\n");
-  assert.match(text, /Research completed/);
+  assert.match(text, /Subagent completed/);
   assert.match(text, /gpt-5\.6-luna/);
   assert.match(text, /· low/);
   assert.match(text, /Evidence only/);
@@ -78,5 +78,5 @@ test("setup diagnostics remain visible when a result has no renderer details", (
 test("partial rendering remains useful without a TUI-specific dependency", () => {
   const details: ResearchToolDetails = { status: "running", agent: "scout", task: "question" };
   const component = renderResearchResult({ content: [], details }, { expanded: false, isPartial: true }, theme);
-  assert.match(component.render(20).join("\n"), /Research running/);
+  assert.match(component.render(20).join("\n"), /Subagent running/);
 });

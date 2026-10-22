@@ -11,7 +11,7 @@
 
 Research often requires reading many files or web pages, while only a small fraction of that material is useful to the ongoing coding conversation. Performing the entire investigation in the parent session consumes its context window and carries irrelevant intermediate material into subsequent work.
 
-Provide focused, research-only delegation: a child investigates in a fresh context and returns a compact, evidence-backed report. The parent retains responsibility for decisions and code changes. The same Ketch capabilities must also be programmatically callable by the parent for simple lookups that do not warrant a separate reasoning context.
+Provide focused delegation: a child investigates or implements in a fresh context and returns a compact report. The parent retains responsibility for decisions and may explicitly delegate code changes to Worker. The same Ketch capabilities must also be programmatically callable by the parent for simple lookups that do not warrant a separate reasoning context.
 
 Success means that a parent can obtain useful local-code or web research without receiving the child's tool transcript, granting the child implementation tools, or adopting a general-purpose agent orchestration framework.
 
@@ -74,10 +74,10 @@ Preserve fresh contexts, completion-driven runs, and parent cancellation. Delibe
 
 ### Delegation interface
 
-The v1 baseline tool name is `research` (an inferred naming default):
+The v1 baseline tool name is `subagent`:
 
 ```ts
-research({
+subagent({
   agent: "scout" | "researcher" | "worker",
   task: string
 })
@@ -214,11 +214,11 @@ All verification below is proposed. No implementation acceptance tests or live r
 
 ## Assumptions
 
-The user explicitly accepted a tool-restricted rather than sandboxed boundary, and completion-driven research with cancellation and an optional safety timeout. The broader accepted direction is two research profiles plus native Ketch MCP capabilities, without workers or recursive orchestration.
+The user explicitly accepted a tool-restricted rather than sandboxed boundary, and completion-driven research with cancellation and an optional safety timeout. The broader accepted direction is three fixed profiles plus native Ketch MCP capabilities, without recursive orchestration.
 
 The following are inferred implementation baselines, not decisions individually approved in the interview:
 
-- `research` is the tool name; two concurrent children, inherited models with profile overrides, a disabled-by-default safety timeout, 400–800-word guidance, and a 12 KiB result cap keep v1 simple. Confirm these as configurable/default behavior in planning; no additional interview is required unless implementation uncovers a consequential conflict.
+- `subagent` is the tool name; two concurrent children, inherited models with profile overrides, a disabled-by-default safety timeout, 400–800-word guidance, and a 12 KiB result cap keep v1 simple. Confirm these as configurable/default behavior in planning; no additional interview is required unless implementation uncovers a consequential conflict.
 - Parent delegation may be autonomous for multi-step investigations. This is guidance, not forced routing or a guarantee of when a model delegates; assess it using representative tasks.
 - The parent uses codemode for Ketch while children receive direct Ketch declarations. The four core tools are sufficient initially. Validate actual availability and structured result behavior with Ketch v0.18.1 during implementation verification, not from discovery alone.
 - Bundled profiles and suppressed automatic context-file loading are preferable to project customization for predictable context/tool isolation. The parent must put relevant project-specific constraints into the task.

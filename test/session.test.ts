@@ -100,7 +100,7 @@ test("fresh history/settings per invocation and large option/command/file-like t
   const tasks = ["/mcp login secret\n@file.md $(touch nope) --cwd /private\n  ", "文🙂".repeat(40_000)];
   const h = harness(({ history, request, append }) => {
     assert.equal(history.buildSessionContext().messages.length, 1);
-    assert.equal(request, `Research task (literal data):\n\n${tasks[h.launches.length - 1]}`);
+    assert.equal(request, `Subagent task (literal data):\n\n${tasks[h.launches.length - 1]}`);
     append(assistant(h.launches.length === 1 ? "FIRST_CHILD_SENTINEL" : "Independent final report"));
   });
   const capturedParent = { ...parent, messages: ["PARENT_SENTINEL"], activeTools: ["write"] };

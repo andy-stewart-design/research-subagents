@@ -42,14 +42,14 @@ test("Ketch and research factories load independently and compose without duplic
   assert.deepEqual(ketchOnly.tools, []);
   const researchOnly = load(createResearchExtension());
   assert.deepEqual(researchOnly.servers, []);
-  assert.deepEqual(researchOnly.tools, ["research"]);
+  assert.deepEqual(researchOnly.tools, ["subagent"]);
   for (const order of [
     (api: ExtensionAPI) => { extension(api); createResearchExtension()(api); },
     (api: ExtensionAPI) => { createResearchExtension()(api); extension(api); },
   ]) {
     const both = load(order);
     assert.deepEqual(both.servers.map((server) => server.name), ["ketch"]);
-    assert.deepEqual(both.tools, ["research"]);
+    assert.deepEqual(both.tools, ["subagent"]);
     assert.equal(both.handlers.get("session_start"), 1);
     assert.equal(both.handlers.get("session_shutdown"), 2);
   }

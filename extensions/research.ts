@@ -12,7 +12,7 @@ import { validateParentKetchTransport } from "../lib/ketch.ts";
 import type { SessionOutcome } from "../lib/session.ts";
 import { resolveWorkspaceRoot } from "../lib/workspace.ts";
 
-const RESEARCH_TOOL = "research";
+const SUBAGENT_TOOL = "subagent";
 const ResearchStatusSchema = Type.Union([
   Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("timed_out"),
 ]);
@@ -97,7 +97,7 @@ function progressResult(status: ResearchRunStatus): ResearchToolResult {
 }
 
 function setupFailure(input: ResearchInput, error: unknown): ResearchToolResult {
-  const handoff = createDiagnosticHandoff(error instanceof Error ? error.message : "Research setup failed.");
+  const handoff = createDiagnosticHandoff(error instanceof Error ? error.message : "Subagent setup failed.");
   const outcome: SessionOutcome = { status: "failed", handoff, activity: { assistantMessages: 0, toolCalls: 0 } };
   return {
     content: [{ type: "text", text: handoff.text }],
@@ -156,13 +156,13 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     };
 
     pi.registerTool({
-      name: RESEARCH_TOOL,
-      label: "research",
+      name: SUBAGENT_TOOL,
+      label: "subagent",
       description: "Delegate multi-step investigations or implementation tasks to a fresh isolated child: choose Scout for local repository work, Researcher for external web/docs work, or Worker for repository changes; use direct tools for a single focused lookup.",
       promptSnippet: "delegate multi-step investigations to a fresh isolated context",
       promptGuidelines: [
         "Choose scout for local paths, repository code, and file audits; choose researcher only for external web/docs/OSS research; choose worker when the child must edit files or run repository commands. If a task needs both research and implementation, make separate delegated calls rather than giving Scout or Researcher write access.",
-        "For investigations spanning multiple files or external sources, delegate to research instead of reproducing the work in the parent with read, bash, or codemode. Delegate implementation work to worker when the child should make changes.",
+        "For investigations spanning multiple files or external sources, delegate to subagent instead of reproducing the work in the parent with read, bash, or codemode. Delegate implementation work to worker when the child should make changes.",
         "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
       ],
@@ -198,7 +198,7 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     // This hook runs before the tool executes and rejects malformed programmatic/model calls even
     // if a future SDK argument normalizer would otherwise coerce them into the schema.
     pi.on("tool_call", (event) => {
-      if (event.toolName === RESEARCH_TOOL) parseResearchInput(event.input);
+      if (event.toolName === SUBAGENT_TOOL) parseResearchInput(event.input);
     });
 
     pi.on("session_shutdown", async () => {

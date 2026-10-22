@@ -9,7 +9,7 @@ A local Pi extension package for three isolated child profiles:
 The package contains two independently loadable extensions:
 
 - `extensions/ketch.ts` exposes parent Ketch retrieval through Pi's native MCP/codemode integration.
-- `extensions/research.ts` exposes `research({ agent, task })` delegation.
+- `extensions/research.ts` exposes `subagent({ agent, task })` delegation.
 
 Loading the package normally enables both. Loading either path explicitly enables only that capability.
 
@@ -94,7 +94,7 @@ The research extension does not register a parent Ketch server. A researcher cre
 
 With `extensions/ketch.ts` plus Pi's native MCP/codemode extensions, the parent can call the four exposed Ketch capabilities directly. The extension registers the default `ketch mcp serve` entry only when another extension has not registered `ketch`; native file configuration retains Pi's precedence. Other Ketch tools remain hidden.
 
-With `extensions/research.ts`, call:
+With `extensions/research.ts`, call `subagent`: 
 
 ```json
 {

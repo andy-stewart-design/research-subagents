@@ -71,7 +71,7 @@ export default (pi) => {
       assert.equal(response.success, true, name);
       const registration = JSON.parse(await readFile(probeFile, "utf8")) as { servers: string[]; tools: string[] };
       assert.deepEqual(registration.servers.filter((server) => server === "ketch"), expectedServers, name);
-      assert.equal(registration.tools.filter((tool) => tool === "research").length, expectsResearch ? 1 : 0, name);
+      assert.equal(registration.tools.filter((tool) => tool === "subagent").length, expectsResearch ? 1 : 0, name);
     }
     const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
     assert.deepEqual(manifest.pi.extensions, ["./extensions/ketch.ts", "./extensions/research.ts"]);

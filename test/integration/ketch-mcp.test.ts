@@ -129,7 +129,7 @@ test("parent Ketch is callable programmatically through native wrappers without 
   await harness.ready();
   assert.ok(harness.session.getActiveToolNames().includes("read"));
   assert.ok(harness.session.getActiveToolNames().includes("codemode"));
-  assert.ok(!harness.session.getAllTools().some((tool) => tool.name === "research"));
+  assert.ok(!harness.session.getAllTools().some((tool) => tool.name === "subagent"));
   for (const name of KETCH_TOOLS) {
     assert.ok(!harness.session.getActiveToolNames().includes(name));
     const args = name.endsWith("scrape") ? { url: "https://example.test/page", max_chars: 6000 } : { query: "question", limit: 5 };

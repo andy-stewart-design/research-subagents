@@ -278,7 +278,7 @@ export async function runResearchSession(
     if (lifecycleError) throw new Error(`Child extension failed: ${lifecycleError}`);
     // The fixed prefix is defense in depth; false also disables extension/skill/template commands.
     // Task bytes after the prefix are unchanged, including leading slashes, @paths, and whitespace.
-    await session.prompt(`Research task (literal data):\n\n${task}`, { expandPromptTemplates: false, source: "extension" });
+    await session.prompt(`Subagent task (literal data):\n\n${task}`, { expandPromptTemplates: false, source: "extension" });
     signal?.throwIfAborted();
     if (lifecycleError) throw new Error(`Child extension failed: ${lifecycleError}`);
     // Read the last finalized message on the active branch after all automatic recovery.

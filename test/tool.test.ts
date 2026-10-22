@@ -72,11 +72,11 @@ test("public research validates raw input before execution and returns only boun
   assert.deepEqual(captured?.input, { agent: "scout", task: rawTask });
   assert.equal(captured?.options.cwd, "/fixture-project");
   assert.equal(captured?.options.agentDir, "/fixture-agent");
-  assert.ok(updates.some((update) => /Research queued/.test(update.content[0].text)));
-  assert.ok(updates.some((update) => /Research completed/.test(update.content[0].text)));
+  assert.ok(updates.some((update) => /Subagent queued/.test(update.content[0].text)));
+  assert.ok(updates.some((update) => /Subagent completed/.test(update.content[0].text)));
 
   const hook = harness.handlers.get("tool_call")!;
-  assert.throws(() => hook({ toolName: "research", input: { agent: "scout", task: " " } }), /Invalid research input/);
+  assert.throws(() => hook({ toolName: "subagent", input: { agent: "scout", task: " " } }), /Invalid research input/);
   assert.throws(() => harness.tool.prepareArguments({ agent: "researcher", task: "x", tools: ["bash"] }), /Invalid research input/);
   assert.doesNotThrow(() => hook({ toolName: "mcp__ketch__search", input: {} }));
 });

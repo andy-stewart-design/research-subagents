@@ -156,7 +156,7 @@ test("native scout suppresses user/project/package resources, keeps task literal
     if (index === 0) {
       const users = context.messages.filter((message) => message.role === "user");
       assert.equal(users.length, 1);
-      assert.deepEqual(users[0]!.content, [{ type: "text", text: `Research task (literal data):\n\n${task}` }]);
+      assert.deepEqual(users[0]!.content, [{ type: "text", text: `Subagent task (literal data):\n\n${task}` }]);
       return assistant([{ type: "thinking", thinking: "PRIVATE_REASONING" }, { type: "text", text: "PRIVATE_INTERIM" }, { type: "toolCall", id: "local-read", name: "read", arguments: { path: "facts.txt" } }], "toolUse", 1, model);
     }
     const result = context.messages.findLast((message) => message.role === "toolResult");
@@ -217,7 +217,7 @@ test("native researcher waits for Ketch, never connects unrelated servers or exp
   const native = nativeServices("researcher", f.root, ({ index, context, model }) => {
     assert.equal(native.connections.length, 1);
     if (index === 0) {
-      assert.match(JSON.stringify(context.messages), /Research task \(literal data\)/);
+      assert.match(JSON.stringify(context.messages), /Subagent task \(literal data\)/);
       return assistant([{ type: "toolCall", id: "web-search", name: "mcp__ketch__search", arguments: { query: "fixture evidence", limit: 5 } }], "toolUse", 1, model);
     }
     const result = context.messages.findLast((message) => message.role === "toolResult");
@@ -239,11 +239,11 @@ test("native worker can edit the repository but remains isolated from unrelated 
   const f = await fixture(t), initial = await before(f);
   const native = nativeServices("worker", f.root, ({ index, context, model }) => {
     if (index === 0) {
-      assert.match(JSON.stringify(context.messages), /Research task \(literal data\)/);
+      assert.match(JSON.stringify(context.messages), /Subagent task \(literal data\)/);
       return assistant([{ type: "toolCall", id: "write-worker", name: "write", arguments: { path: "worker-output.txt", content: "worker changed this file\\n" } }], "toolUse", 1, model);
     }
     const result = context.messages.findLast((message) => message.role === "toolResult");
-    assert.ok(result && result.role === "toolResult" && !result.isError);
+    assert.ok(result && result.role === "toolResult" && !result.isError, JSON.stringify(result));
     return assistant("## Completed\\nWrote the requested file.\\n## Verification\\nThe write tool succeeded.", "stop", 1, model);
   });
   const result = await runResearchSession({ agent: "worker", task: "Create worker-output.txt with the requested content." }, f.options, native.services);
@@ -261,7 +261,7 @@ test("native tool policy blocks mutating/delegating attempts and keeps repo unch
   const native = nativeServices("scout", f.root, ({ index, context, model }) => {
     if (index === 0) return assistant([
       { type: "toolCall", id: "write", name: "write", arguments: { path: "facts.txt", content: "changed" } },
-      { type: "toolCall", id: "delegate", name: "research", arguments: { agent: "scout", task: "recurse" } },
+      { type: "toolCall", id: "delegate", name: "subagent", arguments: { agent: "scout", task: "recurse" } },
     ], "toolUse", 1, model);
     const results = context.messages.filter((message) => message.role === "toolResult");
     assert.equal(results.length, 2);
@@ -282,7 +282,7 @@ test("independent native invocations never inherit previous answers, and large t
     assert.doesNotMatch(JSON.stringify(context), /PREVIOUS_CHILD_SENTINEL/);
     const user = context.messages.find((message) => message.role === "user");
     assert.ok(user && user.role === "user");
-    assert.deepEqual(user.content, [{ type: "text", text: `Research task (literal data):\n\n${task}` }]);
+    assert.deepEqual(user.content, [{ type: "text", text: `Subagent task (literal data):\n\n${task}` }]);
     return assistant("Independent no-findings report.", "stop", 1, model);
   });
   const result = await runResearchSession({ agent: "scout", task }, f.options, second.services);
