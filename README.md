@@ -22,6 +22,49 @@ Loading the package normally enables both. Loading either path explicitly enable
 
 Model availability, provider credentials, Ketch authentication, and browser/backend setup are operator responsibilities. Refresh or sign in through the parent Pi session when needed. Child sessions use read-only inherited/configured authentication data; they do not copy the parent transcript or ephemeral provider state and do not repair credentials.
 
+## Manual installation
+
+For a persistent personal installation from source, clone the repository and install its local dependencies first. Pi does not install or modify dependencies for local package paths:
+
+```sh
+git clone <repository-url> ~/src/research-subagents
+cd ~/src/research-subagents
+npm install
+pi install "$PWD"
+pi list
+```
+
+The default install is personal and is recorded in `~/.pi/agent/settings.json`. To install only for the current project instead, use:
+
+```sh
+pi install --local "$PWD"
+```
+
+Start a new Pi session after installation. Verify the separate prerequisites before using the profiles:
+
+```sh
+ketch --version
+rg --version
+fd --version    # or fdfind --version
+```
+
+Ketch must be installed and configured separately; this package does not download tools, repair credentials, or rewrite Ketch configuration. To update a cloned installation:
+
+```sh
+cd ~/src/research-subagents
+git pull
+npm ci
+pi update --extensions
+```
+
+To remove it from Pi settings without deleting the clone:
+
+```sh
+pi remove "$PWD"
+```
+
+Review extension source before installing it: Pi packages execute extension code in the Pi process. For a one-session smoke test without changing settings, use the explicit loading commands below.
+
 ## Loading
 
 From this directory, a normal package/resource load enables both manifest entries. For explicit local loading without changing Pi configuration:
@@ -54,13 +97,19 @@ With `extensions/ketch.ts` plus Pi's native MCP/codemode extensions, the parent 
 With `extensions/research.ts`, call:
 
 ```json
-{"agent":"scout","task":"Find the authentication flow and cite the relevant files and lines."}
+{
+  "agent": "scout",
+  "task": "Find the authentication flow and cite the relevant files and lines."
+}
 ```
 
 or:
 
 ```json
-{"agent":"researcher","task":"Compare the official API documentation with the current implementation and cite sources and gaps."}
+{
+  "agent": "researcher",
+  "task": "Compare the official API documentation with the current implementation and cite sources and gaps."
+}
 ```
 
 The input has exactly two fields: `agent` (`scout` or `researcher`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious profile mismatches: local paths cannot be sent to Researcher, external URLs cannot be sent to Scout, and a Researcher child that produces no Ketch lookup is not accepted as a sourced report.
