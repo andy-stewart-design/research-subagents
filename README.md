@@ -27,9 +27,9 @@ Model availability, provider credentials, Ketch authentication, and browser/back
 For a persistent personal installation from source, clone the repository and install its local dependencies first. Pi does not install or modify dependencies for local package paths:
 
 ```sh
-git clone <repository-url> ~/src/research-subagents
-cd ~/src/research-subagents
-npm install
+git clone https://github.com/andy-stewart-design/research-subagents.git
+cd /absolute/path/to/research-subagents
+npm ci
 pi install "$PWD"
 pi list
 ```
@@ -40,7 +40,7 @@ The default install is personal and is recorded in `~/.pi/agent/settings.json`. 
 pi install --local "$PWD"
 ```
 
-Start a new Pi session after installation. Verify the separate prerequisites before using the profiles:
+Before you get started, make sure you have [Ketch](https://github.com/1broseidon/ketch) installed. Then, begin a new Pi session after installation. Verify the separate prerequisites before using the profiles:
 
 ```sh
 ketch --version
@@ -48,24 +48,23 @@ rg --version
 fd --version    # or fdfind --version
 ```
 
-Ketch must be installed and configured separately; this package does not download tools, repair credentials, or rewrite Ketch configuration. To update a cloned installation:
+To update a cloned installation:
 
 ```sh
-cd ~/src/research-subagents
+cd /absolute/path/to/research-subagents
 git pull
 npm ci
-pi update --extensions
 ```
 
-To remove it from Pi settings without deleting the clone:
+Then `/reload` your session or start a new one. To remove it from Pi settings without deleting the clone:
 
 ```sh
 pi remove "$PWD"
 ```
 
-Review extension source before installing it: Pi packages execute extension code in the Pi process. For a one-session smoke test without changing settings, use the explicit loading commands below.
+For a one-session test without changing settings, use the explicit loading commands below.
 
-## Loading
+## Session Loading
 
 From this directory, a normal package/resource load enables both manifest entries. For explicit local loading without changing Pi configuration:
 
