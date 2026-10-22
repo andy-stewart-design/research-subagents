@@ -66,7 +66,7 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   const opts = await options(t);
   const h = harness();
   h.services.createModelRuntime = async () => { throw new Error("must not create runtime"); };
-  for (const input of [{ agent: "worker", task: "x" }, { agent: "scout", task: " " }, { agent: "scout", task: "x", cwd: "/" }]) {
+  for (const input of [{ agent: "planner", task: "x" }, { agent: "scout", task: " " }, { agent: "scout", task: "x", cwd: "/" }]) {
     const result = await runResearchSession(input, opts, h.services);
     assert.equal(result.status, "failed"); assert.match(result.handoff.text, /Invalid research input/);
   }
@@ -75,6 +75,15 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   const controller = new AbortController(); controller.abort();
   assert.equal((await runResearchSession({ agent: "scout", task: "x" }, { ...opts, signal: controller.signal }, h.services)).status, "cancelled");
   assert.equal(h.launches.length, 0);
+});
+
+test("worker sessions receive only implementation tools and no research extension", async (t) => {
+  const opts = await options(t), h = harness();
+  const result = await runResearchSession({ agent: "worker", task: "implement the change" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(h.launches[0]!.tools, ["read", "write", "edit", "bash"]);
+  assert.deepEqual(h.launches[0]!.customTools, undefined);
+  assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
 });
 
 test("missing Scout prerequisites fail before model/session creation rather than letting native tools download binaries", async (t) => {

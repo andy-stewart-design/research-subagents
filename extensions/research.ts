@@ -6,7 +6,7 @@ import {
   detailsFromStatus, formatResearchProgress, previewTask, renderResearchCall, renderResearchResult,
   type ResearchToolDetails,
 } from "../lib/render.ts";
-import { parseResearchInput, ResearchInputSchema } from "../lib/profiles.ts";
+import { parseResearchInput, ResearchInputSchema, type ResearchInput } from "../lib/profiles.ts";
 import { createResearchRunner, type ResearchRunStatus, type ResearchRunner } from "../lib/runner.ts";
 import { validateParentKetchTransport } from "../lib/ketch.ts";
 import type { SessionOutcome } from "../lib/session.ts";
@@ -28,7 +28,7 @@ type ResearchToolResult = AgentToolResult<ResearchToolDetails>;
 const LOCAL_PATH_IN_TASK = /(?:^|\s)(?:~\/|\.\.?\/|\/(?:Users|home|tmp|private|var|opt|Volumes)\/|[A-Za-z]:[\\/])\S*/u;
 const EXTERNAL_URL_IN_TASK = /\bhttps?:\/\//u;
 
-function profileTaskError(input: { agent: "scout" | "researcher"; task: string }): string | undefined {
+function profileTaskError(input: ResearchInput): string | undefined {
   if (input.agent === "researcher" && LOCAL_PATH_IN_TASK.test(input.task)) {
     return "Researcher is external-only and cannot inspect local paths. Delegate local repository/file work to scout instead.";
   }
@@ -63,7 +63,7 @@ function sessionOptions(
 }
 
 function finalDetails(
-  input: { agent: "scout" | "researcher"; task: string },
+  input: ResearchInput,
   outcome: SessionOutcome,
   finalStatus?: ResearchRunStatus,
 ): ResearchToolDetails {
@@ -96,7 +96,7 @@ function progressResult(status: ResearchRunStatus): ResearchToolResult {
   };
 }
 
-function setupFailure(input: { agent: "scout" | "researcher"; task: string }, error: unknown): ResearchToolResult {
+function setupFailure(input: ResearchInput, error: unknown): ResearchToolResult {
   const handoff = createDiagnosticHandoff(error instanceof Error ? error.message : "Research setup failed.");
   const outcome: SessionOutcome = { status: "failed", handoff, activity: { assistantMessages: 0, toolCalls: 0 } };
   return {
@@ -111,7 +111,7 @@ async function executeResearch(
   runner: ResearchRunner,
   config: ResearchConfig,
   agentDir: string,
-  input: { agent: "scout" | "researcher"; task: string },
+  input: ResearchInput,
   ctx: ExtensionToolContext,
   signal: AbortSignal | undefined,
   onUpdate: ((result: ResearchToolResult) => void) | undefined,
@@ -158,11 +158,11 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     pi.registerTool({
       name: RESEARCH_TOOL,
       label: "research",
-      description: "Delegate multi-step read-only investigations to a fresh isolated child: choose Scout for local repository work and Researcher for external web/docs work; use direct Ketch only for a single focused lookup.",
+      description: "Delegate multi-step investigations or implementation tasks to a fresh isolated child: choose Scout for local repository work, Researcher for external web/docs work, or Worker for repository changes; use direct tools for a single focused lookup.",
       promptSnippet: "delegate multi-step investigations to a fresh isolated context",
       promptGuidelines: [
-        "Choose scout for local paths, repository code, and file audits; choose researcher only for external web/docs/OSS research. If a task needs both, make separate delegated calls rather than sending local work to researcher.",
-        "For investigations spanning multiple files, external sources, or evidence synthesis, delegate to research instead of reproducing the work in the parent with read, bash, or codemode.",
+        "Choose scout for local paths, repository code, and file audits; choose researcher only for external web/docs/OSS research; choose worker when the child must edit files or run repository commands. If a task needs both research and implementation, make separate delegated calls rather than giving Scout or Researcher write access.",
+        "For investigations spanning multiple files or external sources, delegate to research instead of reproducing the work in the parent with read, bash, or codemode. Delegate implementation work to worker when the child should make changes.",
         "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
       ],

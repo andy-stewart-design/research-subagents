@@ -71,6 +71,7 @@ async function fixture(t: TestContext) {
     config: parseConfig({ profiles: {
       scout: { model: `${provider}/${modelId}`, thinking: "max" },
       researcher: { model: `${provider}/${modelId}`, thinking: "max" },
+      worker: { model: `${provider}/${modelId}`, thinking: "max" },
     } }),
   };
   return { root, cwd, agentDir, installerLog, extensionLog, parent, options };
@@ -232,6 +233,27 @@ test("native researcher waits for Ketch, never connects unrelated servers or exp
   const calls = await fs.readFile(join(f.root, "mcp-calls.jsonl"), "utf8");
   assert.match(calls, /search/); assert.doesNotMatch(calls, /login/);
   await assertUnchanged(f, initial);
+});
+
+test("native worker can edit the repository but remains isolated from unrelated resources", { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t), initial = await before(f);
+  const native = nativeServices("worker", f.root, ({ index, context, model }) => {
+    if (index === 0) {
+      assert.match(JSON.stringify(context.messages), /Research task \(literal data\)/);
+      return assistant([{ type: "toolCall", id: "write-worker", name: "write", arguments: { path: "worker-output.txt", content: "worker changed this file\\n" } }], "toolUse", 1, model);
+    }
+    const result = context.messages.findLast((message) => message.role === "toolResult");
+    assert.ok(result && result.role === "toolResult" && !result.isError);
+    return assistant("## Completed\\nWrote the requested file.\\n## Verification\\nThe write tool succeeded.", "stop", 1, model);
+  });
+  const result = await runResearchSession({ agent: "worker", task: "Create worker-output.txt with the requested content." }, f.options, native.services);
+  assert.equal(result.status, "completed", result.handoff.text);
+  assert.equal(result.activity.toolCalls, 1);
+  assert.equal(await fs.readFile(join(f.cwd, "worker-output.txt"), "utf8"), "worker changed this file\\n");
+  assert.deepEqual(await snapshot(f.agentDir), initial.agent);
+  assert.equal(JSON.stringify(f.parent), initial.parent);
+  await assert.rejects(fs.access(f.installerLog), { code: "ENOENT" });
+  await assert.rejects(fs.access(f.extensionLog), { code: "ENOENT" });
 });
 
 test("native tool policy blocks mutating/delegating attempts and keeps repo unchanged", { timeout: 10_000 }, async (t) => {

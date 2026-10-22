@@ -1,9 +1,10 @@
 # Pi research-subagents
 
-A local Pi extension package for two read-only research profiles:
+A local Pi extension package for three isolated child profiles:
 
-- **Scout** — isolated local code investigation using Pi's `read`, `grep`, `find`, and `ls` policy.
-- **Researcher** — isolated external investigation using Ketch's `search`, `scrape`, `code`, and `docs` tools.
+- **Scout** — read-only local code investigation using Pi's `read`, `grep`, `find`, and `ls` policy.
+- **Researcher** — read-only external investigation using Ketch's `search`, `scrape`, `code`, and `docs` tools.
+- **Worker** — repository implementation using Pi's `read`, `write`, `edit`, and `bash` tools.
 
 The package contains two independently loadable extensions:
 
@@ -111,7 +112,16 @@ or:
 }
 ```
 
-The input has exactly two fields: `agent` (`scout` or `researcher`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious profile mismatches: local paths cannot be sent to Researcher, external URLs cannot be sent to Scout, and a Researcher child that produces no Ketch lookup is not accepted as a sourced report.
+or:
+
+```json
+{
+  "agent": "worker",
+  "task": "Implement the requested change, run the relevant tests, and report the files changed."
+}
+```
+
+The input has exactly two fields: `agent` (`scout`, `researcher`, or `worker`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious profile mismatches: local paths cannot be sent to Researcher, external URLs cannot be sent to Scout, and a Researcher child that produces no Ketch lookup is not accepted as a sourced report. Worker tasks are allowed to modify the current repository.
 
 For researcher dispatches, an effective global or trusted project Ketch file entry wins over extension registrations, matching native Pi precedence. If that winning backend changes the command, arguments, environment, working directory, URL, or transport from plain `ketch mcp serve`, research fails with an actionable diagnostic. Scout is not blocked by Ketch configuration conflicts. If no parent Ketch entry exists, the researcher still proceeds with its independent child-owned configuration.
 
@@ -136,6 +146,9 @@ Example:
     },
     "scout": {
       "thinking": "medium"
+    },
+    "worker": {
+      "thinking": "high"
     }
   }
 }
@@ -143,11 +156,11 @@ Example:
 
 Defaults are concurrency **2** and **no research deadline**. A configured `timeoutMs` starts only after queued work receives a slot. Cancellation or timeout interrupts the child, waits for owned cleanup, and returns a truthful bounded error; the first interruption cause wins. This is separate from native MCP request/startup timeouts.
 
-Agent files may also carry bundled frontmatter defaults. The bundled Scout and Researcher default to `openai-codex/gpt-5.6-luna` with `high` thinking; an explicit `research-subagents.json` profile override wins, followed by parent provider/model and thinking inheritance. Overrides must use `provider/model` and a supported thinking level. Unavailable or unauthenticated models fail without fallback.
+Agent files may also carry bundled frontmatter defaults. The bundled Scout, Researcher, and Worker default to `openai-codex/gpt-5.6-luna` with `high` thinking; an explicit `research-subagents.json` profile override wins, followed by parent provider/model and thinking inheritance. Overrides must use `provider/model` and a supported thinking level. Unavailable or unauthenticated models fail without fallback.
 
 ## Safety and reports
 
-Child sessions are fresh and isolated. They do not load ordinary extensions, skills, prompt templates, context files, parent history, or unrelated MCP servers. Scout has local read/search tools only; Researcher has the four direct Ketch tools only. This is a tool policy, not an operating-system sandbox: normal Pi/Ketch caches and configured credential behavior remain possible, but the feature does not edit source code or install tools.
+Child sessions are fresh and isolated. They do not load ordinary extensions, skills, prompt templates, context files, parent history, or unrelated MCP servers. Scout has local read/search tools only; Researcher has the four direct Ketch tools only; Worker has read/write/edit and shell tools. This is a tool policy, not an operating-system sandbox: Worker can modify repository files and execute arbitrary shell commands, and normal Pi/Ketch caches and configured credential behavior remain possible.
 
 Only the final assistant report is returned to the parent. Handoffs are capped at 12 KiB. Oversized reports retain a clipped excerpt and a private `report.md` under the OS temporary directory, outside the repository/workspace. The path is included in the result. If report preservation fails, the result reports that failure and does not claim a saved report.
 

@@ -34,6 +34,7 @@ export const ResearchConfigSchema = Type.Object(
         {
           scout: Type.Optional(ProfileOverridesSchema),
           researcher: Type.Optional(ProfileOverridesSchema),
+          worker: Type.Optional(ProfileOverridesSchema),
         },
         { additionalProperties: false },
       ),

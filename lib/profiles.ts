@@ -4,12 +4,12 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { KETCH_TOOLS } from "./ketch.ts";
 
-export const PROFILE_NAMES = Object.freeze(["scout", "researcher"] as const);
+export const PROFILE_NAMES = Object.freeze(["scout", "researcher", "worker"] as const);
 export type ProfileName = (typeof PROFILE_NAMES)[number];
 
 export const ResearchInputSchema = Type.Object(
   {
-    agent: Type.Union([Type.Literal("scout"), Type.Literal("researcher")]),
+    agent: Type.Union([Type.Literal("scout"), Type.Literal("researcher"), Type.Literal("worker")]),
     task: Type.String({
       minLength: 1,
       pattern: "\\S",
@@ -24,7 +24,7 @@ export type ResearchInput = Static<typeof ResearchInputSchema>;
 export function parseResearchInput(input: unknown): ResearchInput {
   if (!Value.Check(ResearchInputSchema, input)) {
     throw new Error(
-      'Invalid research input: provide only agent ("scout" or "researcher") and a non-whitespace task.',
+      'Invalid research input: provide only agent ("scout", "researcher", or "worker") and a non-whitespace task.',
     );
   }
   const { agent, task } = input as ResearchInput;
@@ -60,11 +60,16 @@ export const PROFILES: Readonly<Record<ProfileName, Profile>> = Object.freeze({
     description: "External research with sourced, compact findings.",
     tools: KETCH_TOOLS,
   }),
+  worker: Object.freeze({
+    name: "worker",
+    description: "General-purpose repository implementation with file edits and shell verification.",
+    tools: Object.freeze(["read", "write", "edit", "bash"]),
+  }),
 });
 
 export function getProfile(name: ProfileName): Profile {
   if (!Object.hasOwn(PROFILES, name)) {
-    throw new Error("Unknown research profile: expected scout or researcher.");
+    throw new Error("Unknown research profile: expected scout, researcher, or worker.");
   }
   return PROFILES[name];
 }

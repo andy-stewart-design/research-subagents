@@ -31,6 +31,7 @@ test("explicit concurrency, timeout, and per-profile overrides are preserved", (
     profiles: {
       scout: { model: "provider/model", thinking: "off" },
       researcher: { thinking: "high" },
+      worker: { model: "provider/worker", thinking: "medium" },
     },
   };
   assert.deepEqual(parseConfig(input), input);
@@ -50,10 +51,11 @@ test("invalid configuration shapes and unknown fields fail instead of being igno
     { maxConcurrency: "2" }, { maxConcurrency: Infinity }, { maxConcurrency: Number.MAX_SAFE_INTEGER + 1 },
     { timeoutMs: 0 }, { timeoutMs: -1 }, { timeoutMs: "100" },
     { timeoutMs: NaN }, { timeoutMs: Infinity }, { timeoutMs: null },
-    { profiles: [] }, { profiles: null }, { profiles: { worker: {} } },
+    { profiles: [] }, { profiles: null }, { profiles: { planner: {} } },
     { profiles: { scout: null } }, { profiles: { scout: { thinking: "ultra" } } },
     { profiles: { scout: { tools: ["bash"] } } },
     { profiles: { researcher: { systemPrompt: "replace" } } },
+    { profiles: { worker: { tools: ["bash"] } } },
     { model: "provider/global" }, { cwd: "/elsewhere" }, { maxTurns: 5 },
     { maxToolCalls: 5 }, { tokenBudget: 1000 },
     JSON.parse('{"profiles":{"__proto__":{"model":"other/model"}}}'),
@@ -163,7 +165,7 @@ test("profile-file model defaults are used and explicit config overrides them", 
 test("model selection inherits exact parent provider, ID, and thinking without mutation", () => {
   const config = parseConfig({});
   const snapshot = JSON.stringify({ config, parent });
-  for (const name of ["scout", "researcher"] as const) {
+  for (const name of ["scout", "researcher", "worker"] as const) {
     assert.deepEqual(selectModel(name, config, parent), {
       provider: "openai-codex", modelId: "parent-model", thinkingLevel: "high",
     });
@@ -202,7 +204,7 @@ test("missing/invalid parent models never select a fallback", () => {
 
 test("model selection validates runtime profile names and malformed direct override data", () => {
   const config = parseConfig({});
-  assert.throws(() => selectModel("worker" as unknown as ProfileName, config, parent), /Unknown research profile/);
+  assert.throws(() => selectModel("planner" as unknown as ProfileName, config, parent), /Unknown research profile/);
   assert.throws(() => selectModel("scout", { maxConcurrency: 2, profiles: { scout: { model: "unqualified" } } }, parent), /No valid model selected/);
   assert.deepEqual(selectModel("scout", config, { model: { provider: "custom-provider", id: "models/test" } }), {
     provider: "custom-provider", modelId: "models/test",
