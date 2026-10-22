@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatResearchProgress, previewTask, renderResearchCall, renderResearchResult } from "../lib/render.ts";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Box, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { ResearchToolDetails } from "../lib/render.ts";
 
 const theme = {
@@ -16,6 +16,27 @@ test("research rendering keeps default output compact and strips unsafe task dis
   assert.ok(lines.length > 0);
   assert.doesNotMatch(stripTerminalSequences(lines.join("\n")), /\u001b\[/);
   assert.ok(Array.from(previewTask(task)).length <= 240);
+});
+
+test("truncated call previews preserve the surrounding box background through trailing padding", () => {
+  const ansiTheme = {
+    fg: (_color: string, text: string) => `\u001b[37m${text}\u001b[39m`,
+    bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
+  } as any;
+  for (const task of ["Inspect the source files and document the setup steps. ".repeat(4), "Inspect 界🙂 sources. ".repeat(12)]) {
+    for (const background of ["\u001b[43m", "\u001b[42m", "\u001b[45m"]) {
+      const backgroundEnd = "\u001b[49m";
+      const box = new Box(1, 1, (text) => `${background}${text}${backgroundEnd}`);
+      box.addChild(renderResearchCall({ agent: "researcher", task }, ansiTheme));
+      const line = box.render(160)[1]!;
+      assert.ok(line.startsWith(background));
+      assert.ok(line.endsWith(backgroundEnd));
+      assert.equal(visibleWidth(line), 160);
+      assert.match(stripTerminalSequences(line), /\.\.\.\s+$/u);
+      assert.doesNotMatch(line.slice(0, -backgroundEnd.length), /\u001b\[(?:0|49)m/u,
+        "inner resets must not clear the box background before its trailing padding");
+    }
+  }
 });
 
 test("progress and expanded result rendering expose status/activity without a transcript", () => {

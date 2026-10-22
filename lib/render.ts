@@ -62,7 +62,9 @@ export function formatResearchProgress(status: ResearchRunStatus): string {
 }
 
 export function renderResearchCall(args: ResearchInput, theme: Theme): Component {
-  const task = truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH);
+  // Truncation inserts full ANSI resets, which would clear the surrounding tool box's background.
+  // The preview is plain text; strip those resets before applying theme colors.
+  const task = stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
   return new Text(
     `${theme.fg("toolTitle", theme.bold("research "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", ` — ${task}`) : ""}`,
     0,
