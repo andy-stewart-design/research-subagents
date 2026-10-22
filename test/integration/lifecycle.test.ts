@@ -33,7 +33,7 @@ async function setup(t: TestContext, mode: "unresponsive" | "hang-call") {
   let requests = 0;
   const services: Partial<SessionServices> = {
     hasScoutBinary: () => true,
-    startupTimeoutMs: 100,
+    startupTimeoutMs: 1000,
     async createModelRuntime(childAgentDir, selection, signal) {
       const runtime = await createChildModelRuntime(childAgentDir, selection, signal);
       runtime.streamSimple = (model, context) => {
@@ -137,7 +137,7 @@ test("an unresponsive MCP startup fails closed and native teardown exits the own
 
 test("a configured timeout aborts a running native tool, closes MCP, and leaves no orphan process", { timeout: 10_000 }, async (t) => {
   const fixture = await setup(t, "hang-call");
-  const runner = new ResearchRunner({ maxConcurrency: 1, timeoutMs: 150, services: fixture.services });
+  const runner = new ResearchRunner({ maxConcurrency: 1, timeoutMs: 1500, services: fixture.services });
   const result = await runner.run({ agent: "researcher", task: "running timeout" }, fixture.options);
   assert.equal(result.status, "timed_out");
   assert.match(result.handoff.text, /timed out/);

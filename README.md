@@ -29,7 +29,7 @@ For a persistent personal installation from source, clone the repository and ins
 ```sh
 git clone https://github.com/andy-stewart-design/research-subagents.git
 cd /absolute/path/to/research-subagents
-npm ci
+pnpm install --frozen-lockfile
 pi install "$PWD"
 pi list
 ```
@@ -53,7 +53,7 @@ To update a cloned installation:
 ```sh
 cd /absolute/path/to/research-subagents
 git pull
-npm ci
+pnpm install --frozen-lockfile
 ```
 
 Then `/reload` your session or start a new one. To remove it from Pi settings without deleting the clone:
@@ -160,7 +160,7 @@ The package is installed into personal Pi settings only when explicitly requeste
 Run the deterministic checks from the repository root with:
 
 ```sh
-npm run check
+pnpm run check
 ```
 
 Live model/web quality and human TUI acceptance require operator credentials, an approved disposable environment, and manual observation; the automated checks do not claim those results.
