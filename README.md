@@ -164,7 +164,7 @@ Child sessions are fresh and isolated. They do not load ordinary extensions, ski
 
 Only the final assistant report is returned to the parent. Handoffs are capped at 12 KiB. Oversized reports retain a clipped excerpt and a private `report.md` under the OS temporary directory, outside the repository/workspace. The path is included in the result. If report preservation fails, the result reports that failure and does not claim a saved report.
 
-The compact TUI rendering shows profile, bounded task preview, queue/running/completed state, elapsed time, tool activity, and latest tool. Expanded output shows the bounded report and retained path without exposing the child transcript or reasoning. Noninteractive callers receive the same bounded result contract.
+The compact TUI rendering shows profile, bounded task preview, queue/running/completed state, elapsed time, tool activity, and latest tool. Expand a live subagent result to inspect its retained ordered tool history: each entry shows a safe argument summary and a timestamp relative to child start (not tool duration). Only the latest 50 calls are retained; older calls are represented by an omitted count. Expanded output also shows the bounded report and retained path without exposing the child transcript or reasoning. Noninteractive callers receive the same bounded result contract.
 
 ## Recovery and removal
 

@@ -62,6 +62,12 @@ test("progress and expanded result rendering expose status/activity without a tr
   assert.doesNotMatch(formatResearchProgress(status), /ms/);
   assert.match(formatResearchProgress(status), /gpt-5\.6-luna/);
   assert.match(formatResearchProgress(status), /; low/);
+  for (const [toolCalls, label] of [[0, "0 tool calls"], [1, "1 tool call"], [2, "2 tool calls"]] as const) {
+    assert.match(formatResearchProgress({
+      ...status,
+      activity: { assistantMessages: 1, toolCalls },
+    }), new RegExp(`; ${label}`));
+  }
   const details: ResearchToolDetails = {
     status: "completed", agent: "researcher", task: "question",
     model: "openai-codex/gpt-5.6-luna", thinkingLevel: "low",
@@ -74,8 +80,35 @@ test("progress and expanded result rendering expose status/activity without a tr
   assert.match(text, /Subagent completed/);
   assert.match(text, /gpt-5\.6-luna/);
   assert.match(text, /· low/);
+  assert.match(text, /· 3 tool\s+calls/);
   assert.match(text, /Evidence only/);
   assert.doesNotMatch(text, /reasoning|tool transcript/i);
+});
+
+test("expanded results show the retained ordered tool history while collapsed results stay compact", () => {
+  const activity = {
+    assistantMessages: 1, toolCalls: 7, latestTool: "bash",
+    omittedToolCalls: 6,
+    toolHistory: [{ index: 7, tool: "bash", summary: "pnpm test", elapsedMs: 256_000 }],
+  } as const;
+  const details: ResearchToolDetails = { status: "completed", agent: "worker", task: "question", activity };
+  const expanded = renderResearchResult({ content: [], details }, { expanded: true, isPartial: false }, theme).render(80).join("\n");
+  const collapsed = renderResearchResult({ content: [], details }, { expanded: false, isPartial: false }, theme).render(80).join("\n");
+  const partial = renderResearchResult({ content: [], details: { ...details, status: "running" } }, { expanded: true, isPartial: true }, theme).render(80).join("\n");
+  const singularOmitted = renderResearchResult({
+    content: [],
+    details: {
+      ...details,
+      activity: { ...activity, toolCalls: 2, omittedToolCalls: 1, toolHistory: [{ index: 2, tool: "bash", elapsedMs: 0 }] },
+    },
+  }, { expanded: true, isPartial: false }, theme).render(80).join("\n");
+  assert.match(expanded, /· 7 tool calls/);
+  assert.match(expanded, /… 6 earlier tool calls omitted/);
+  assert.match(expanded, /7\. bash · pnpm test · 4m 16s/);
+  assert.match(partial, /· 7 tool calls/);
+  assert.match(partial, /7\. bash · pnpm test · 4m 16s/);
+  assert.match(singularOmitted, /… 1 earlier tool call omitted/);
+  assert.doesNotMatch(collapsed, /pnpm test|earlier tool call/);
 });
 
 test("setup diagnostics remain visible when a result has no renderer details", () => {

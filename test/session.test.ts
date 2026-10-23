@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import type { AgentSessionEvent, CreateAgentSessionOptions, ExtensionError, SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../lib/config.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
-import { runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
+import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
 import { assistant, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
 
 async function options(t: TestContext): Promise<ResearchSessionOptions> {
@@ -143,10 +143,84 @@ test("only final authoritative text blocks enter handoff; activity has no transc
   assert.equal(result.handoff.text, "## Answer\nFinal\n## Evidence\nfile.ts:1");
   assert.equal(result.status, "completed");
   assert.deepEqual(result.usage, usage(10));
-  assert.deepEqual(result.activity, { assistantMessages: 2, toolCalls: 1, latestTool: "read" });
+  assert.equal(result.activity.assistantMessages, 2);
+  assert.equal(result.activity.toolCalls, 1);
+  assert.equal(result.activity.latestTool, "read");
+  assert.equal(result.activity.toolHistory?.length, 1);
+  assert.equal(result.activity.toolHistory?.[0]?.summary, undefined);
   assert.equal(updates.length, 3);
   assert.doesNotMatch(JSON.stringify([updates, result]), /SECRET|INTERIM/);
   assert.deepEqual(h.calls, ["subscribe", "bind", "prompt", "abort", "shutdown", "unsubscribe", "dispose"]);
+});
+
+test("tool activity grows with fixed run-relative timestamps, safe summaries, immutable snapshots, and a capped tail", async (t) => {
+  const opts = await options(t);
+  let clock = 10_000;
+  const updates: import("../lib/session.ts").SessionActivity[] = [];
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "one", toolName: "bash", args: { command: "pnpm\n test \u001b[31m" } });
+    clock = 266_000;
+    emit({ type: "tool_execution_start", toolCallId: "two", toolName: "UNTRUSTED_SECRET".repeat(100), args: { command: "DO_NOT_ECHO" } });
+    for (let index = 3; index <= 52; index++) {
+      clock += 1_000;
+      emit({ type: "tool_execution_start", toolCallId: String(index), toolName: "bash", args: { command: `echo ${index}` } });
+    }
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "worker", task: "question" }, {
+    ...opts, startedAt: 10_000, now: () => clock, onActivity: (activity) => updates.push(activity),
+  }, h.services);
+  assert.equal(result.status, "completed");
+  assert.equal(result.activity.toolCalls, 52);
+  assert.equal(result.activity.omittedToolCalls, 2);
+  assert.equal(result.activity.toolHistory?.length, 50);
+  assert.equal(result.activity.toolHistory?.[0]?.index, 3);
+  assert.equal(result.activity.toolHistory?.[0]?.tool, "bash");
+  assert.equal(result.activity.toolHistory?.[0]?.summary, "echo 3");
+  assert.equal(result.activity.toolHistory?.[0]?.elapsedMs, 257_000);
+  assert.equal(updates[0]?.toolHistory?.[0]?.summary, "pnpm test");
+  assert.equal(updates[0]?.toolHistory?.[0]?.elapsedMs, 0);
+  assert.equal(result.activity.toolHistory?.[1]?.tool, "bash");
+  assert.doesNotMatch(JSON.stringify(result), /UNTRUSTED_SECRET|DO_NOT_ECHO|private/);
+  const growing = updates.find((activity) => activity.toolHistory?.length === 1);
+  assert.ok(growing);
+  assert.equal(growing.toolHistory?.length, 1);
+  assert.equal(updates.at(-1)?.toolHistory?.length, 50);
+});
+
+test("tool summaries use the actual Pi/Ketch argument fields and cap batched URLs", async (t) => {
+  const opts = await options(t);
+  const urls = Array.from({ length: 40 }, (_, index) => `https://example.test/article-${index}-${"x".repeat(12)}`);
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "search", toolName: "mcp__ketch__search", args: { query: "Ketch MCP schemas" } });
+    emit({ type: "tool_execution_start", toolCallId: "scrape", toolName: "mcp__ketch__scrape", args: { urls } });
+    emit({ type: "tool_execution_start", toolCallId: "code", toolName: "mcp__ketch__code", args: { query: "MCP tool schema" } });
+    emit({ type: "tool_execution_start", toolCallId: "docs", toolName: "mcp__ketch__docs", args: { query: "MCP SDK" } });
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "researcher", task: "question" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  const history = result.activity.toolHistory!;
+  assert.equal(history[0]?.summary, "Ketch MCP schemas");
+  assert.equal(history[2]?.summary, "MCP tool schema");
+  assert.equal(history[3]?.summary, "MCP SDK");
+  assert.ok(history[1]?.summary?.startsWith(urls[0]!));
+  assert.ok(!history[1]?.summary?.includes(urls.at(-1)!));
+  assert.ok(Array.from(history[1]?.summary ?? "").length <= MAX_TOOL_SUMMARY);
+});
+
+test("Scout summaries use native pattern/path fields rather than tool output", async (t) => {
+  const opts = await options(t);
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "read", toolName: "read", args: { path: "src/index.ts" } });
+    emit({ type: "tool_execution_start", toolCallId: "grep", toolName: "grep", args: { pattern: "createApp", path: "src" } });
+    emit({ type: "tool_execution_start", toolCallId: "find", toolName: "find", args: { pattern: "**/*.test.ts", path: "test" } });
+    emit({ type: "tool_execution_start", toolCallId: "ls", toolName: "ls", args: { path: "src" } });
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "scout", task: "question" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.activity.toolHistory?.map((call) => call.summary), ["src/index.ts", "createApp", "**/*.test.ts", "src"]);
 });
 
 test("malformed optional provider usage is omitted rather than invented or leaking an uncaught failure", async (t) => {

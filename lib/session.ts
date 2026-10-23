@@ -8,16 +8,30 @@ import {
   type AgentSession, type CreateAgentSessionOptions, type ExtensionError,
   type McpExtensionOptions, type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { selectModel, type DispatchDefaults, type ModelSelection, type ResearchConfig } from "./config.ts";
 import { createResearcherMcpExtension, waitForKetchCapabilities } from "./ketch.ts";
 import { getProfile, loadProfileDefaults, loadProfilePrompt, parseResearchInput } from "./profiles.ts";
 import { createDiagnosticHandoff, createReportHandoff, type ReportHandoff } from "./report.ts";
 import { createScoutTools, hasScoutBinary, requireScoutBinary, type ScoutBinaryCheck } from "./scout.ts";
 
+export interface SessionToolCall {
+  /** One-based position in the complete child run, retained when older calls are capped. */
+  readonly index: number;
+  /** A policy-approved tool name, or the bounded placeholder for an unknown tool. */
+  readonly tool: string;
+  /** A short, sanitized argument summary; tool output and reasoning are never included. */
+  readonly summary?: string;
+  /** Elapsed time from the child run start when execution began (not tool duration). */
+  readonly elapsedMs: number;
+}
+
 export interface SessionActivity {
   readonly assistantMessages: number;
   readonly toolCalls: number;
   readonly latestTool?: string;
+  readonly toolHistory?: readonly SessionToolCall[];
+  readonly omittedToolCalls?: number;
 }
 export interface ResearchSessionOptions {
   readonly cwd: string;
@@ -27,6 +41,9 @@ export interface ResearchSessionOptions {
   readonly parent: DispatchDefaults;
   readonly signal?: AbortSignal;
   readonly scratchDir?: string;
+  /** Runner-provided clock/start let activity timestamps share the run's elapsed-time origin. */
+  readonly now?: () => number;
+  readonly startedAt?: number;
   readonly onActivity?: (activity: SessionActivity) => void;
 }
 export interface SessionOutcome {
@@ -130,6 +147,71 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown child-session error.";
 }
 
+/** Keep the activity side channel useful without making it a transcript or an unbounded store. */
+export const MAX_TOOL_HISTORY = 50;
+export const MAX_TOOL_SUMMARY = 120;
+
+function truncateSummary(value: string, limit = MAX_TOOL_SUMMARY): string {
+  if (limit <= 0) return "";
+  const characters = Array.from(value);
+  return characters.length <= limit
+    ? value
+    : `${characters.slice(0, limit - 1).join("")}…`;
+}
+
+function safeSummaryPart(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Keep the existing side-channel privacy posture: obvious credential/private sentinels are
+  // not made visible merely because they arrived in an otherwise displayable argument.
+  if (/(?:secret|token|password|credential|private)/iu.test(value)) return undefined;
+  const clean = stripTerminalSequences(value).replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return clean ? truncateSummary(clean) : undefined;
+}
+
+function arraySummary(values: readonly unknown[]): string | undefined {
+  let summary = "";
+  for (const value of values) {
+    const part = safeSummaryPart(value);
+    if (!part) continue;
+    const separator = summary ? ", " : "";
+    const remaining = MAX_TOOL_SUMMARY - Array.from(summary).length - separator.length;
+    if (remaining <= 0) break;
+    if (Array.from(part).length > remaining) {
+      summary += separator + truncateSummary(part, remaining);
+      break;
+    }
+    summary += separator + part;
+  }
+  return summary || undefined;
+}
+
+function argumentSummary(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const values = args as Record<string, unknown>;
+  // These names mirror Pi 1.1.0's local tool schemas and Ketch v0.18.1's MCP schemas:
+  // grep/find use pattern, search/code/docs use query, and scrape uses url or urls.
+  const keys = toolName === "bash" ? ["command"]
+    : ["read", "write", "edit", "ls"].includes(toolName) ? ["path"]
+    : toolName === "grep" ? ["pattern", "path"]
+    : toolName === "find" ? ["pattern", "path"]
+    : toolName === "mcp__ketch__scrape" ? ["url", "urls"]
+    : ["mcp__ketch__search", "mcp__ketch__code", "mcp__ketch__docs"].includes(toolName) ? ["query"]
+    : [];
+  for (const key of keys) {
+    const value = values[key];
+    const summary = Array.isArray(value) ? arraySummary(value) : safeSummaryPart(value);
+    if (summary) return summary;
+  }
+  return undefined;
+}
+
+function activitySnapshot(activity: SessionActivity): SessionActivity {
+  return {
+    ...activity,
+    ...(activity.toolHistory ? { toolHistory: activity.toolHistory.map((call) => ({ ...call })) } : {}),
+  };
+}
+
 function collectUsage(history: SessionManager): Usage | undefined {
   let total: Usage | undefined;
   for (const entry of history.getEntries()) {
@@ -159,6 +241,8 @@ export async function runResearchSession(
 ): Promise<SessionOutcome> {
   const services: SessionServices = { createModelRuntime: createChildModelRuntime, createSession: createAgentSession, hasScoutBinary, ...overrides };
   const { signal, cwd, agentDir, workspaceDir, scratchDir, onActivity } = options;
+  const now = options.now ?? Date.now;
+  const startedAt = options.startedAt ?? now();
   let session: ChildSession | undefined;
   let history: SessionManager | undefined;
   let unsubscribe: (() => void) | undefined;
@@ -257,9 +341,29 @@ export async function runResearchSession(
       if (event.type === "message_end" && event.message.role === "assistant") {
         activity = { ...activity, assistantMessages: activity.assistantMessages + 1 };
       } else if (event.type === "tool_execution_start") {
-        activity = { ...activity, toolCalls: activity.toolCalls + 1, latestTool: profile.tools.includes(event.toolName) ? event.toolName : "unavailable tool" };
+        const knownTool = profile.tools.includes(event.toolName);
+        const tool = knownTool ? event.toolName : "unavailable tool";
+        const index = activity.toolCalls + 1;
+        const previous = activity.toolHistory ?? [];
+        const call: SessionToolCall = {
+          index,
+          tool,
+          elapsedMs: Math.max(0, now() - startedAt),
+          ...(knownTool ? (() => {
+            const summary = argumentSummary(event.toolName, event.args);
+            return summary ? { summary } : {};
+          })() : {}),
+        };
+        const history = [...previous, call];
+        activity = {
+          ...activity,
+          toolCalls: index,
+          latestTool: tool,
+          toolHistory: history.length > MAX_TOOL_HISTORY ? history.slice(-MAX_TOOL_HISTORY) : history,
+          ...(history.length > MAX_TOOL_HISTORY ? { omittedToolCalls: index - MAX_TOOL_HISTORY } : {}),
+        };
       } else return;
-      try { onActivity?.({ ...activity }); }
+      try { onActivity?.(activitySnapshot(activity)); }
       catch (error) { lifecycleError ??= `Activity callback failed: ${errorText(error)}`; }
     });
     await session.bindExtensions({ onError });

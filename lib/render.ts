@@ -36,6 +36,20 @@ function formatElapsed(elapsedMs: number): string {
   return `${minutes}m ${roundedSeconds % 60}s`;
 }
 
+function formatToolCallNoun(count: number): string {
+  return `tool call${count === 1 ? "" : "s"}`;
+}
+
+function renderToolHistory(activity: SessionActivity, theme: Theme): string {
+  const history = activity.toolHistory ?? [];
+  const omitted = activity.omittedToolCalls ?? Math.max(0, activity.toolCalls - history.length);
+  const lines = history.map((call) =>
+    `${call.index}. ${call.tool}${call.summary ? ` · ${call.summary}` : ""} · ${formatElapsed(call.elapsedMs)}`,
+  );
+  if (omitted > 0) lines.unshift(`… ${omitted} earlier ${formatToolCallNoun(omitted)} omitted`);
+  return lines.length ? `\n${theme.fg("dim", lines.join("\n"))}` : "";
+}
+
 export function previewTask(task: string): string {
   const singleLine = stripTerminalSequences(task).replace(/[\u0000-\u001f\u007f\s]+/gu, " ").trim();
   const characters = Array.from(singleLine);
@@ -61,7 +75,7 @@ export function formatResearchProgress(status: ResearchRunStatus): string {
   const thinking = status.thinkingLevel ? `; ${status.thinkingLevel}` : "";
   const activity = status.activity?.latestTool
     ? `; latest tool ${status.activity.latestTool}`
-    : status.activity ? `; ${status.activity.toolCalls} tool call(s)` : "";
+    : status.activity ? `; ${status.activity.toolCalls} ${formatToolCallNoun(status.activity.toolCalls)}` : "";
   const elapsed = status.elapsedMs !== undefined ? `; ${formatElapsed(status.elapsedMs)}` : "";
   return `Subagent ${status.state}: ${status.agent ?? "unknown"}${model}${thinking}${activity}${elapsed}`;
 }
@@ -101,10 +115,11 @@ export function renderResearchResult(
     if (details.model) progress += ` · ${details.model}`;
     if (details.thinkingLevel) progress += ` · ${details.thinkingLevel}`;
     if (details.activity) {
-      progress += ` · ${details.activity.toolCalls} tool call(s)`;
+      progress += ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`;
       if (details.activity.latestTool) progress += ` · ${details.activity.latestTool}`;
     }
     if (details.elapsedMs !== undefined) progress += ` · ${formatElapsed(details.elapsedMs)}`;
+    if (options.expanded && details.activity) progress += renderToolHistory(details.activity, theme);
     return new Text(theme.fg("warning", progress), 0, 0);
   }
   if (!details) {
@@ -119,10 +134,11 @@ export function renderResearchResult(
   if (details.model) text += theme.fg("dim", ` · ${details.model}`);
   if (details.thinkingLevel) text += theme.fg("dim", ` · ${details.thinkingLevel}`);
   if (details.activity) {
-    text += theme.fg("dim", ` · ${details.activity.toolCalls} tool call(s)`);
+    text += theme.fg("dim", ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`);
     if (details.activity.latestTool) text += theme.fg("dim", ` · ${details.activity.latestTool}`);
   }
   if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${formatElapsed(details.elapsedMs)}`);
+  if (options.expanded && details.activity) text += renderToolHistory(details.activity, theme);
   if (details.truncated) text += theme.fg("warning", " · report clipped");
   if (details.reportPath && options.expanded) text += `\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
   if (options.expanded) {

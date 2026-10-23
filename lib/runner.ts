@@ -62,6 +62,13 @@ function initialActivity(): SessionOutcome["activity"] {
   return { assistantMessages: 0, toolCalls: 0 };
 }
 
+function snapshotActivity(activity: SessionOutcome["activity"]): SessionOutcome["activity"] {
+  return {
+    ...activity,
+    ...(activity.toolHistory ? { toolHistory: activity.toolHistory.map((call) => ({ ...call })) } : {}),
+  };
+}
+
 function selectedModel(input: ResearchInput, options: ResearchSessionOptions): { model?: string; thinkingLevel?: string } {
   try {
     const selection = selectModel(input.agent, options.config, options.parent, loadProfileDefaults(input.agent));
@@ -235,9 +242,12 @@ export class ResearchRunner {
       const childOptions: ResearchSessionOptions = {
         ...entry.options,
         signal: entry.controller.signal,
+        ...(entry.startedAt !== undefined ? { startedAt: entry.startedAt } : {}),
+        now: this.now,
         onActivity: (activity) => {
-          this.emit(entry, "running", undefined, activity);
-          entry.options.onActivity?.(activity);
+          const snapshot = snapshotActivity(activity);
+          this.emit(entry, "running", undefined, snapshot);
+          entry.options.onActivity?.(snapshot);
         },
       };
       result = await this.runSession(entry.input, childOptions, this.services);
@@ -321,7 +331,7 @@ export class ResearchRunner {
       ...(startedAt !== undefined ? { startedAt, elapsedMs: now - startedAt } : {}),
       ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
         ? { finishedAt: now } : {}),
-      ...(currentActivity ? { activity: currentActivity } : {}),
+      ...(currentActivity ? { activity: snapshotActivity(currentActivity) } : {}),
     };
     try { this.onStatus?.(status); } catch { /* Observability cannot affect execution. */ }
     try { entry.onStatus?.(status); } catch { /* Observability cannot affect execution. */ }
