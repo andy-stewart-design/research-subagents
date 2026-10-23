@@ -23,12 +23,17 @@ export interface ResearchToolDetails {
 
 const MAX_TASK_PREVIEW = 240;
 const MAX_CALL_PREVIEW_WIDTH = 96;
+interface SubagentRenderContext {
+  readonly expanded: boolean;
+}
 
 function formatElapsed(elapsedMs: number): string {
   const seconds = elapsedMs / 1_000;
-  return seconds < 10
-    ? `${seconds.toFixed(1).replace(/\.0$/u, "")}s`
-    : `${Math.round(seconds)}s`;
+  if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/u, "")}s`;
+  const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds < 60) return `${roundedSeconds}s`;
+  const minutes = Math.floor(roundedSeconds / 60);
+  return `${minutes}m ${roundedSeconds % 60}s`;
 }
 
 export function previewTask(task: string): string {
@@ -61,12 +66,16 @@ export function formatResearchProgress(status: ResearchRunStatus): string {
   return `Subagent ${status.state}: ${status.agent ?? "unknown"}${model}${thinking}${activity}${elapsed}`;
 }
 
-export function renderResearchCall(args: ResearchInput, theme: Theme): Component {
+export function renderResearchCall(args: ResearchInput, theme: Theme, context?: SubagentRenderContext): Component {
+  const expanded = context?.expanded ?? false;
   // Truncation inserts full ANSI resets, which would clear the surrounding tool box's background.
   // The preview is plain text; strip those resets before applying theme colors.
-  const task = stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
+  const task = expanded
+    ? stripTerminalSequences(args.task).replace(/[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    : stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
+  const separator = expanded ? "\n\n" : " — ";
   return new Text(
-    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", ` — ${task}`) : ""}`,
+    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", `${separator}${task}`) : ""}`,
     0,
     0,
   );
@@ -83,6 +92,7 @@ export function renderResearchResult(
   result: AgentToolResult<ResearchToolDetails>,
   options: ToolRenderResultOptions,
   theme: Theme,
+  _context?: SubagentRenderContext,
 ): Component {
   const details = result.details;
   if (options.isPartial) {

@@ -18,6 +18,15 @@ test("research rendering keeps default output compact and strips unsafe task dis
   assert.ok(Array.from(previewTask(task)).length <= 240);
 });
 
+test("expanded call rendering reveals the complete task while running", () => {
+  const task = "First line\nSecond line with \u001b[31munsafe\u001b[0m text and a long implementation request.";
+  const component = renderResearchCall({ agent: "worker", task }, theme, { expanded: true });
+  const text = stripTerminalSequences(component.render(80).join("\n"));
+  assert.match(text, /First line/);
+  assert.match(text, /Second line with unsafe text and a long implementation request\./);
+  assert.doesNotMatch(text, /\u001b\[/);
+});
+
 test("truncated call previews preserve the surrounding box background through trailing padding", () => {
   const ansiTheme = {
     fg: (_color: string, text: string) => `\u001b[37m${text}\u001b[39m`,
@@ -49,6 +58,7 @@ test("progress and expanded result rendering expose status/activity without a tr
   assert.match(formatResearchProgress(status), /running/);
   assert.match(formatResearchProgress(status), /mcp__ketch__search/);
   assert.match(formatResearchProgress(status), /41s/);
+  assert.match(formatResearchProgress({ ...status, elapsedMs: 68_000 }), /1m 8s/);
   assert.doesNotMatch(formatResearchProgress(status), /ms/);
   assert.match(formatResearchProgress(status), /gpt-5\.6-luna/);
   assert.match(formatResearchProgress(status), /; low/);

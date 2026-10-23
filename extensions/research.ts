@@ -187,11 +187,11 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
           return setupFailure(input, error);
         }
       },
-      renderCall(args, theme) {
-        return renderResearchCall(args, theme);
+      renderCall(args, theme, context) {
+        return renderResearchCall(args, theme, context);
       },
-      renderResult(result, options, theme) {
-        return renderResearchResult(result as ResearchToolResult, options, theme);
+      renderResult(result, options, theme, context) {
+        return renderResearchResult(result as ResearchToolResult, options, theme, context);
       },
     });
 
