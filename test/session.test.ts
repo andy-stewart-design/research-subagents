@@ -6,6 +6,7 @@ import test, { type TestContext } from "node:test";
 import { Type } from "typebox";
 import type { AgentSessionEvent, CreateAgentSessionOptions, ExtensionError, SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../lib/config.ts";
+import type { ProfileName, ProfilePrompt } from "../lib/profiles.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
 import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
 import { assistant, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
@@ -84,6 +85,62 @@ test("worker sessions receive only implementation tools and no research extensio
   assert.deepEqual(h.launches[0]!.tools, ["read", "write", "edit", "bash"]);
   assert.deepEqual(h.launches[0]!.customTools, undefined);
   assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+});
+
+test("configured profiles expand and narrow every allowlist without leaking tools or extensions", async (t) => {
+  const profiles: Record<ProfileName, ProfilePrompt> = {
+    scout: { text: "scout prompt", defaults: {}, tools: ["read", "bash"] },
+    researcher: { text: "researcher prompt", defaults: {}, tools: ["read"] },
+    worker: { text: "worker prompt", defaults: {}, tools: [] },
+  };
+  for (const agent of ["scout", "researcher", "worker"] as const) {
+    const opts = await options(t), h = harness();
+    h.services.loadProfile = (name) => profiles[name];
+    const result = await runResearchSession({ agent, task: "configured policy" }, opts, h.services);
+    assert.equal(result.status, "completed", result.handoff.text);
+    assert.deepEqual(h.launches[0]!.tools, profiles[agent].tools);
+    assert.deepEqual(h.launches[0]!.settingsManager!.getSettings().defaultTools, profiles[agent].tools);
+    assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+    assert.deepEqual(h.session.getActiveToolNames(), profiles[agent].tools);
+    assert.deepEqual(h.session.getCallableToolNames(), profiles[agent].tools);
+    assert.doesNotMatch(JSON.stringify(h.launches[0]!.customTools ?? []), /mcp__ketch__|write|edit|bash/);
+  }
+});
+
+test("Ketch subsets expose only selected direct capabilities and native-only researchers skip Ketch barriers", async (t) => {
+  const opts = await options(t), h = harness();
+  const profile: ProfilePrompt = {
+    text: "researcher subset prompt", defaults: {}, tools: ["mcp__ketch__search", "mcp__ketch__docs"],
+  };
+  h.services.loadProfile = () => profile;
+  const subset = await runResearchSession({ agent: "researcher", task: "use the selected Ketch tools" }, opts, h.services);
+  assert.equal(subset.status, "failed");
+  assert.match(subset.handoff.text, /without using an external Ketch lookup/);
+  assert.deepEqual(h.launches[0]!.tools, profile.tools);
+  assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions.length, 1);
+  assert.deepEqual(h.session.getActiveToolNames(), profile.tools);
+
+  const native = harness();
+  native.services.loadProfile = () => ({ text: "native-only researcher", defaults: {}, tools: ["read"] });
+  const nativeResult = await runResearchSession({ agent: "researcher", task: "inspect local evidence" }, opts, native.services);
+  assert.equal(nativeResult.status, "completed");
+  assert.deepEqual(native.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+});
+
+test("only selected grep/find prerequisites and wrappers are requested", async (t) => {
+  for (const [tools, expectedBinary, expectedCustom] of [
+    [["read", "grep"], "rg", ["grep"]],
+    [["read", "find"], "fd", ["find"]],
+  ] as const) {
+    const opts = await options(t), h = harness(), checked: string[] = [];
+    h.services.loadProfile = () => ({ text: "search profile", defaults: {}, tools });
+    h.services.hasScoutBinary = (binary) => { checked.push(binary); return true; };
+    const result = await runResearchSession({ agent: "scout", task: "search locally" }, opts, h.services);
+    assert.equal(result.status, "completed");
+    assert.deepEqual(checked, [expectedBinary]);
+    assert.deepEqual(h.launches[0]!.customTools?.map((tool) => tool.name), expectedCustom);
+    assert.deepEqual(h.launches[0]!.tools, tools);
+  }
 });
 
 test("missing Scout prerequisites fail before model/session creation rather than letting native tools download binaries", async (t) => {

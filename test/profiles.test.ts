@@ -10,7 +10,7 @@ import {
   PROFILES,
   ResearchInputSchema,
   getProfile,
-  loadProfileDefaults, loadProfilePrompt,
+  loadProfileDefaults, loadProfilePrompt, parseProfilePrompt,
   parseResearchInput,
   type ProfileName,
 } from "../lib/profiles.ts";
@@ -76,6 +76,33 @@ test("unknown runtime names cannot select a profile or escape bundled prompt pat
     assert.throws(() => getProfile(name), /Unknown research profile/);
     assert.throws(() => loadProfilePrompt(name), /Unknown research profile/);
   }
+});
+
+test("profile tools frontmatter supports defaults, inline arrays, comma lists, and explicit empty lists", () => {
+  assert.deepEqual(parseProfilePrompt("scout", "---\nmodel: fixture/model\n---\nbody").tools, getProfile("scout").tools);
+  assert.deepEqual(parseProfilePrompt("scout", "---\ntools: [read, bash, mcp__ketch__search]\n---\nbody").tools,
+    ["read", "bash", "mcp__ketch__search"]);
+  assert.deepEqual(parseProfilePrompt("worker", "---\ntools: read, write, edit\n---\nbody").tools,
+    ["read", "write", "edit"]);
+  assert.deepEqual(parseProfilePrompt("worker", "---\ntools: []\n---\nbody").tools, []);
+  for (const [source, expected] of [
+    [`---\ntools: ["read", 'bash', "grep"] # trailing comment\n---\nbody`, ["read", "bash", "grep"]],
+    [`---\ntools: "read, bash" # scalar comment\n---\nbody`, ["read", "bash"]],
+    [`---\ntools: ['mcp__ketch__search', "mcp__ketch__docs"]\n---\nbody`, ["mcp__ketch__search", "mcp__ketch__docs"]],
+    [`---\ntools: [read, bash] # '#' inside a comment\n---\nbody`, ["read", "bash"]],
+  ] as const) assert.deepEqual(parseProfilePrompt("worker", source).tools, expected);
+  for (const source of [
+    `---\ntools: [read, mystery]\n---\nbody`,
+    `---\ntools: [read, read]\n---\nbody`,
+    `---\ntools: [read\n---\nbody`,
+    `---\ntools: ["read, bash"]\n---\nbody`,
+    `---\ntools: ["read", "bash]\n---\nbody`,
+    `---\ntools: [read,]\n---\nbody`,
+    `---\ntools:\n---\nbody`,
+    `---\ntools: ""\n---\nbody`,
+    `---\ntools: [read] trailing\n---\nbody`,
+  ]) assert.throws(() => parseProfilePrompt("worker", source), /Invalid worker prompt tools|unsupported tool name/);
+  assert.throws(() => parseProfilePrompt("worker", "---\ntools: read\nmodel: fixture/model\ntools: bash\n---\nbody"), /duplicate tools/);
 });
 
 test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {

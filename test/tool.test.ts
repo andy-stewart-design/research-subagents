@@ -24,6 +24,7 @@ function extensionHarness(
   runSession: NonNullable<ConstructorParameters<typeof ResearchRunner>[0]>["runSession"] = async () => outcome(),
   loadConfig: () => ReturnType<typeof parseConfig> = () => parseConfig({}),
   getMcpServers: () => readonly { name: string; config: McpServerConfig }[] = () => [],
+  loadProfileTools?: (agent: "scout" | "researcher" | "worker") => readonly string[],
 ) {
   let tool: any;
   const handlers = new Map<string, (event: any, ctx?: any) => any>();
@@ -37,6 +38,7 @@ function extensionHarness(
   createResearchExtension({
     getAgentDir: () => "/fixture-agent",
     loadConfig,
+    ...(loadProfileTools ? { loadProfileTools } : {}),
     createRunner: (config) => {
       runner = new ResearchRunner({
         maxConcurrency: config.maxConcurrency,
@@ -97,12 +99,43 @@ test("an incompatible Ketch backend blocks only researcher, not local Scout", as
 test("profile/domain mismatches fail closed before a child starts", async () => {
   let started = false;
   const harness = extensionHarness(async () => { started = true; return outcome(); });
-  const result = await harness.tool.execute("research-1", {
+  const researcher = await harness.tool.execute("research-1", {
     agent: "researcher", task: "Audit /Users/example/project/package.json and its local source files.",
   }, undefined, undefined, harness.context);
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /external-only/);
+  assert.equal(researcher.isError, true);
+  assert.match(researcher.content[0].text, /external-only/);
+  const scout = await harness.tool.execute("research-2", {
+    agent: "scout", task: "Check https://example.com for the latest documentation.",
+  }, undefined, undefined, harness.context);
+  assert.equal(scout.isError, true);
+  assert.match(scout.content[0].text, /local-only/);
   assert.equal(started, false);
+});
+
+test("domain heuristics follow configured tool capabilities", async () => {
+  for (const agent of ["scout", "researcher"] as const) {
+    const harness = extensionHarness(async () => outcome(), undefined, undefined, () => ["bash"]);
+    for (const task of ["Fetch https://example.com/docs.", "Inspect /Users/example/project/package.json."]) {
+      const result = await harness.tool.execute(`${agent}-${task}`, { agent, task }, undefined, undefined, harness.context);
+      assert.equal(result.isError, undefined, `${agent}: ${task}`);
+    }
+  }
+
+  for (const tools of [["write"], ["edit"], ["write", "edit"]]) {
+    const harness = extensionHarness(async () => outcome(), undefined, undefined, () => tools);
+    const result = await harness.tool.execute("worker-local", {
+      agent: "worker", task: "Update /Users/example/project/package.json.",
+    }, undefined, undefined, harness.context);
+    assert.equal(result.isError, undefined, tools.join(","));
+  }
+});
+
+test("the default Worker can receive a URL task because bash provides external access", async () => {
+  const harness = extensionHarness();
+  const result = await harness.tool.execute("worker-url", {
+    agent: "worker", task: "Use https://example.com/docs to verify the implementation.",
+  }, undefined, undefined, harness.context);
+  assert.equal(result.isError, undefined);
 });
 
 test("public research marks failed, cancelled, and timed-out child outcomes as tool errors", async () => {

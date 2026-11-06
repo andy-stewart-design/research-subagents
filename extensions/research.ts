@@ -6,9 +6,9 @@ import {
   detailsFromStatus, formatResearchProgress, previewTask, renderResearchCall, renderResearchResult,
   type ResearchToolDetails,
 } from "../lib/render.ts";
-import { parseResearchInput, ResearchInputSchema, type ResearchInput } from "../lib/profiles.ts";
+import { loadProfileTools, parseResearchInput, ResearchInputSchema, type ResearchInput } from "../lib/profiles.ts";
 import { createResearchRunner, type ResearchRunStatus, type ResearchRunner } from "../lib/runner.ts";
-import { validateParentKetchTransport } from "../lib/ketch.ts";
+import { KETCH_TOOLS, validateParentKetchTransport } from "../lib/ketch.ts";
 import type { SessionOutcome } from "../lib/session.ts";
 import { resolveWorkspaceRoot } from "../lib/workspace.ts";
 
@@ -28,12 +28,21 @@ type ResearchToolResult = AgentToolResult<ResearchToolDetails>;
 const LOCAL_PATH_IN_TASK = /(?:^|\s)(?:~\/|\.\.?\/|\/(?:Users|home|tmp|private|var|opt|Volumes)\/|[A-Za-z]:[\\/])\S*/u;
 const EXTERNAL_URL_IN_TASK = /\bhttps?:\/\//u;
 
-function profileTaskError(input: ResearchInput): string | undefined {
-  if (input.agent === "researcher" && LOCAL_PATH_IN_TASK.test(input.task)) {
-    return "Researcher is external-only and cannot inspect local paths. Delegate local repository/file work to scout instead.";
+const LOCAL_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+const EXTERNAL_TOOLS = new Set(["bash", ...KETCH_TOOLS]);
+
+function profileTaskError(input: ResearchInput, selectedTools: readonly string[]): string | undefined {
+  const canInspectLocal = selectedTools.some((tool) => LOCAL_TOOLS.has(tool));
+  const canRetrieveExternal = selectedTools.some((tool) => EXTERNAL_TOOLS.has(tool));
+  if (LOCAL_PATH_IN_TASK.test(input.task) && !canInspectLocal) {
+    return input.agent === "researcher"
+      ? "Researcher is external-only and cannot inspect local paths. Delegate local repository/file work to scout instead."
+      : `${input.agent} has no selected local-capable tools and cannot inspect local paths. Delegate local repository/file work to a profile with read, write, edit, bash, grep, find, or ls.`;
   }
-  if (input.agent === "scout" && EXTERNAL_URL_IN_TASK.test(input.task)) {
-    return "Scout is local-only and cannot retrieve external URLs. Delegate web/documentation work to researcher instead.";
+  if (EXTERNAL_URL_IN_TASK.test(input.task) && !canRetrieveExternal) {
+    return input.agent === "scout"
+      ? "Scout is local-only and cannot retrieve external URLs. Delegate web/documentation work to researcher instead."
+      : `${input.agent} has no selected external-capable tools and cannot retrieve external URLs. Delegate web/documentation work to a profile with bash or Ketch access.`;
   }
   return undefined;
 }
@@ -135,12 +144,14 @@ async function executeResearch(
 export interface ResearchExtensionDependencies {
   readonly getAgentDir?: () => string;
   readonly loadConfig?: (agentDir: string) => ResearchConfig;
+  readonly loadProfileTools?: (agent: ResearchInput["agent"]) => readonly string[];
   readonly createRunner?: (config: ResearchConfig) => ResearchRunner;
 }
 
 export function createResearchExtension(dependencies: ResearchExtensionDependencies = {}) {
   const getAgentDirForExtension = dependencies.getAgentDir ?? getAgentDir;
   const loadConfigForExtension = dependencies.loadConfig ?? loadConfig;
+  const loadProfileToolsForExtension = dependencies.loadProfileTools ?? loadProfileTools;
   const createRunnerForExtension = dependencies.createRunner ?? createResearchRunner;
 
   return function (pi: ExtensionAPI) {
@@ -175,10 +186,11 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
         const input = parseResearchInput(params);
         try {
-          const taskError = profileTaskError(input);
+          const selectedTools = loadProfileToolsForExtension(input.agent);
+          const taskError = profileTaskError(input, selectedTools);
           if (taskError) return setupFailure(input, new Error(taskError));
           const agentDir = getAgentDirForExtension();
-          if (input.agent === "researcher") {
+          if (selectedTools.some((tool) => KETCH_TOOLS.includes(tool))) {
             const parentKetchError = validateParentKetchTransport(pi, ctx.cwd, agentDir, ctx.isProjectTrusted());
             if (parentKetchError) return setupFailure(input, new Error(parentKetchError));
           }

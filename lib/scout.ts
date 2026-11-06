@@ -45,6 +45,11 @@ function guarded<T extends TSchema, D>(definition: ToolDefinition<T, D>, binary:
 }
 
 /** Preserve native schemas/results/renderers; only withdraw the automatic-install fallback. */
-export function createScoutTools(cwd: string, available: ScoutBinaryCheck): ToolDefinition[] {
-  return [defineTool(guarded(createGrepToolDefinition(cwd), "rg", available)), defineTool(guarded(createFindToolDefinition(cwd), "fd", available))];
+export function createScoutTools(
+  cwd: string, available: ScoutBinaryCheck, selectedTools: readonly string[] = ["grep", "find"],
+): ToolDefinition[] {
+  const tools: ToolDefinition[] = [];
+  if (selectedTools.includes("grep")) tools.push(defineTool(guarded(createGrepToolDefinition(cwd), "rg", available)));
+  if (selectedTools.includes("find")) tools.push(defineTool(guarded(createFindToolDefinition(cwd), "fd", available)));
+  return tools;
 }

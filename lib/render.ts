@@ -47,7 +47,7 @@ function renderToolHistory(activity: SessionActivity, theme: Theme): string {
     `${call.index}. ${call.tool}${call.summary ? ` · ${call.summary}` : ""} · ${formatElapsed(call.elapsedMs)}`,
   );
   if (omitted > 0) lines.unshift(`… ${omitted} earlier ${formatToolCallNoun(omitted)} omitted`);
-  return lines.length ? `\n${theme.fg("dim", lines.join("\n"))}` : "";
+  return lines.length ? `\n\n${theme.fg("dim", lines.join("\n"))}` : "";
 }
 
 export function previewTask(task: string): string {
@@ -88,8 +88,10 @@ export function renderResearchCall(args: ResearchInput, theme: Theme, context?: 
     ? stripTerminalSequences(args.task).replace(/[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
     : stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
   const separator = expanded ? "\n\n" : " — ";
+  // Pi renders call and result components as adjacent children; one trailing newline here
+  // produces the single empty line between the expanded prompt and result metadata.
   return new Text(
-    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", `${separator}${task}`) : ""}`,
+    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", `${separator}${task}`) : ""}${expanded ? "\n" : ""}`,
     0,
     0,
   );
@@ -138,12 +140,12 @@ export function renderResearchResult(
     if (details.activity.latestTool) text += theme.fg("dim", ` · ${details.activity.latestTool}`);
   }
   if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${formatElapsed(details.elapsedMs)}`);
-  if (options.expanded && details.activity) text += renderToolHistory(details.activity, theme);
   if (details.truncated) text += theme.fg("warning", " · report clipped");
-  if (details.reportPath && options.expanded) text += `\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
+  if (options.expanded && details.activity) text += renderToolHistory(details.activity, theme);
+  if (details.reportPath && options.expanded) text += `\n\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
   if (options.expanded) {
     const report = resultText(result);
-    if (report) text += `\n${report}`;
+    if (report) text += `\n\n${report}`;
   }
   return new Text(text, 0, 0);
 }

@@ -21,13 +21,19 @@ export const KETCH_TOOLS: readonly string[] = Object.freeze([
 export const KETCH_STARTUP_MS = 10_000;
 const TOOL_PREFIX = "mcp__ketch__";
 
-export function createKetchServerConfig(exposure: "codemode" | "direct"): McpServerConfig {
+export function createKetchServerConfig(
+  exposure: "codemode" | "direct", selectedTools: readonly string[] = KETCH_TOOLS,
+): McpServerConfig {
+  const tools = selectedTools.filter((name) => KETCH_TOOLS.includes(name));
+  if (tools.length !== selectedTools.length || new Set(tools).size !== tools.length) {
+    throw new Error("Ketch configuration contains an unknown or duplicate tool.");
+  }
   return {
     command: "ketch",
     args: ["mcp", "serve"],
     description: "Web search, Markdown scraping, public OSS code search, and library documentation using Ketch.",
     exposure: "hidden",
-    toolExposure: Object.fromEntries(KETCH_TOOLS.map((name) => [name.slice(TOOL_PREFIX.length), exposure])),
+    toolExposure: Object.fromEntries(tools.map((name) => [name.slice(TOOL_PREFIX.length), exposure])),
   };
 }
 
@@ -117,11 +123,11 @@ export function validateParentKetchTransport(
 }
 
 // Never reads mcp.json or copies a parent's registered-server list for the child itself.
-export function loadResearcherMcpConfig(): LoadedMcpConfig {
+export function loadResearcherMcpConfig(selectedTools: readonly string[] = KETCH_TOOLS): LoadedMcpConfig {
   return {
     servers: [{
       name: KETCH_SERVER,
-      config: createKetchServerConfig("direct"),
+      config: createKetchServerConfig("direct", selectedTools),
       scope: "extension",
       source: "research-subagents",
     }],
@@ -253,11 +259,19 @@ export function createOwnedKetchTransport(entry: Parameters<NonNullable<McpExten
   return transport;
 }
 
+export interface ResearcherMcpExtensionOptions extends Pick<McpExtensionOptions, "createTransport" | "logPath"> {
+  readonly tools?: readonly string[];
+}
+
 export function createResearcherMcpExtension(
-  options: Pick<McpExtensionOptions, "createTransport" | "logPath"> = {},
+  options: ResearcherMcpExtensionOptions = {},
 ) {
   const createTransport = options.createTransport ?? ((entry, cwd) => createOwnedKetchTransport(entry, cwd));
-  return createMcpExtension({ ...options, createTransport, loadConfig: loadResearcherMcpConfig });
+  const { tools, ...extensionOptions } = options;
+  return createMcpExtension({
+    ...extensionOptions, createTransport,
+    loadConfig: () => loadResearcherMcpConfig(tools ?? KETCH_TOOLS),
+  });
 }
 
 export interface KetchToolView {
@@ -267,6 +281,10 @@ export interface KetchToolView {
 
 export interface KetchReadinessOptions {
   readonly mode: "parent" | "researcher";
+  /** Ketch capabilities required by this isolated child; omitted means all four. */
+  readonly tools?: readonly string[];
+  /** Complete child allowlist, including native tools when Ketch is combined with them. */
+  readonly allowedTools?: readonly string[];
   readonly signal?: AbortSignal;
   /** Connection/capability startup only, never a deadline on research. */
   readonly timeoutMs?: number;
@@ -281,6 +299,11 @@ export async function waitForKetchCapabilities(
     throw new Error("Ketch startup timeout must be positive and within the supported timer range.");
   }
   const deadline = performance.now() + timeoutMs;
+  const expected = options.tools ?? KETCH_TOOLS;
+  const allowed = new Set(options.allowedTools ?? expected);
+  if (expected.some((name) => !KETCH_TOOLS.includes(name)) || expected.length !== new Set(expected).size) {
+    throw new Error("Ketch readiness contains an unknown or duplicate required tool.");
+  }
   while (true) {
     options.signal?.throwIfAborted();
     const tools = view.getAllTools();
@@ -290,14 +313,14 @@ export async function waitForKetchCapabilities(
       (tool.exposure === "direct" && active.has(tool.name));
     if (options.mode === "researcher") {
       const unexpected = tools.filter((tool) =>
-        !KETCH_TOOLS.includes(tool.name) &&
+        !allowed.has(tool.name) &&
         (callable(tool) || (tool.exposure === "model-only" && active.has(tool.name))),
       );
       if (unexpected.length) {
         throw new Error("Researcher has unexpected reachable tools: " + unexpected.map((tool) => tool.name).join(", "));
       }
     }
-    const missing = KETCH_TOOLS.filter((name) => !tools.some((tool) =>
+    const missing = expected.filter((name) => !tools.some((tool) =>
       tool.name === name && (options.mode === "researcher"
         ? tool.exposure === "direct" && active.has(name)
         : callable(tool)),

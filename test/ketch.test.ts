@@ -83,6 +83,14 @@ test("project Ketch transport replaces global configuration while metadata overr
   rmSync(root, { recursive: true, force: true });
 });
 
+test("Ketch configuration exposes only the selected subset", () => {
+  assert.deepEqual(createKetchServerConfig("direct", ["mcp__ketch__search", "mcp__ketch__docs"]).toolExposure,
+    { search: "direct", docs: "direct" });
+  assert.throws(() => createKetchServerConfig("direct", ["mcp__ketch__search", "mcp__ketch__tag"]), /unknown/);
+  assert.deepEqual(loadResearcherMcpConfig(["mcp__ketch__code"]).servers[0]!.config.toolExposure,
+    { code: "direct" });
+});
+
 test("shared Ketch configuration fixes the CLI and exposes only four core tools", () => {
   for (const exposure of ["codemode", "direct"] as const) {
     const config = createKetchServerConfig(exposure);

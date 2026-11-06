@@ -10,8 +10,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { selectModel, type DispatchDefaults, type ModelSelection, type ResearchConfig } from "./config.ts";
-import { createResearcherMcpExtension, waitForKetchCapabilities } from "./ketch.ts";
-import { getProfile, loadProfileDefaults, loadProfilePrompt, parseResearchInput } from "./profiles.ts";
+import { KETCH_TOOLS, createResearcherMcpExtension, waitForKetchCapabilities } from "./ketch.ts";
+import { loadProfile, parseResearchInput, renderProfileSystemPrompt, type ProfileName, type ProfilePrompt } from "./profiles.ts";
 import { createDiagnosticHandoff, createReportHandoff, type ReportHandoff } from "./report.ts";
 import { createScoutTools, hasScoutBinary, requireScoutBinary, type ScoutBinaryCheck } from "./scout.ts";
 
@@ -66,6 +66,8 @@ export interface SessionServices {
   readonly mcpOptions?: Pick<McpExtensionOptions, "createTransport" | "logPath">;
   readonly startupTimeoutMs?: number;
   hasScoutBinary: ScoutBinaryCheck;
+  /** Injectable profile loader for isolated tests and hosts with a profile source of truth. */
+  loadProfile?: (name: ProfileName) => ProfilePrompt;
 }
 
 /** Read normal configuration through native services, without creating/updating auth or catalog files. */
@@ -251,6 +253,7 @@ export async function runResearchSession(
   const cleanupErrors: string[] = [];
   let closing = false;
   let activity: SessionActivity = { assistantMessages: 0, toolCalls: 0 };
+  let ketchCalls = 0;
   let failure: string | undefined;
   let report: string | undefined;
   let interrupted = false;
@@ -280,16 +283,16 @@ export async function runResearchSession(
   try {
     signal?.throwIfAborted();
     const { agent, task } = parseResearchInput(input);
-    const profile = getProfile(agent);
-    const profilePrompt = loadProfilePrompt(agent);
-    const profileDefaults = loadProfileDefaults(agent);
+    const loadedProfile = (overrides.loadProfile ?? loadProfile)(agent);
+    const profilePrompt = renderProfileSystemPrompt(loadedProfile);
+    const selectedTools = loadedProfile.tools;
+    const profileDefaults = loadedProfile.defaults;
+    const selectedKetchTools = selectedTools.filter((tool) => KETCH_TOOLS.includes(tool));
     for (const path of [cwd, agentDir, workspaceDir]) {
       if (!isAbsolute(path)) throw new Error("Research session requires absolute workspace, cwd, and agent directory paths.");
     }
-    if (agent === "scout") {
-      requireScoutBinary("rg", services.hasScoutBinary);
-      requireScoutBinary("fd", services.hasScoutBinary);
-    }
+    if (selectedTools.includes("grep")) requireScoutBinary("rg", services.hasScoutBinary);
+    if (selectedTools.includes("find")) requireScoutBinary("fd", services.hasScoutBinary);
     const selection = selectModel(agent, options.config, options.parent, profileDefaults);
     const runtime = await services.createModelRuntime(agentDir, selection, signal);
     signal?.throwIfAborted();
@@ -311,7 +314,7 @@ export async function runResearchSession(
     }
     signal?.throwIfAborted();
     const settingsManager = SettingsManager.inMemory({
-      defaultTools: [...profile.tools], cacheWarming: "off", enableSkillCommands: false,
+      defaultTools: [...selectedTools], cacheWarming: "off", enableSkillCommands: false,
       packages: [], extensions: [], skills: [], prompts: [], themes: [], enableInstallTelemetry: false,
     });
     history = SessionManager.inMemory(cwd);
@@ -319,8 +322,8 @@ export async function runResearchSession(
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       systemPrompt: profilePrompt, appendSystemPrompt: [],
-      extensionFactories: agent === "researcher"
-        ? [createResearcherMcpExtension({ logPath: devNull, ...services.mcpOptions })] : [],
+      extensionFactories: selectedKetchTools.length
+        ? [createResearcherMcpExtension({ logPath: devNull, ...services.mcpOptions, tools: selectedKetchTools })] : [],
     });
     await resourceLoader.reload();
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -329,8 +332,9 @@ export async function runResearchSession(
     const created = await services.createSession({
       cwd, agentDir, modelRuntime: runtime, model,
       ...(selection.thinkingLevel !== undefined ? { thinkingLevel: selection.thinkingLevel } : {}),
-      tools: [...profile.tools], settingsManager, sessionManager: history, resourceLoader,
-      ...(agent === "scout" ? { customTools: createScoutTools(cwd, services.hasScoutBinary) } : {}),
+      tools: [...selectedTools], settingsManager, sessionManager: history, resourceLoader,
+      ...((selectedTools.includes("grep") || selectedTools.includes("find"))
+        ? { customTools: createScoutTools(cwd, services.hasScoutBinary, selectedTools) } : {}),
     });
     session = created.session;
     signal?.throwIfAborted();
@@ -341,7 +345,8 @@ export async function runResearchSession(
       if (event.type === "message_end" && event.message.role === "assistant") {
         activity = { ...activity, assistantMessages: activity.assistantMessages + 1 };
       } else if (event.type === "tool_execution_start") {
-        const knownTool = profile.tools.includes(event.toolName);
+        const knownTool = selectedTools.includes(event.toolName);
+        if (knownTool && selectedKetchTools.includes(event.toolName)) ketchCalls++;
         const tool = knownTool ? event.toolName : "unavailable tool";
         const index = activity.toolCalls + 1;
         const previous = activity.toolHistory ?? [];
@@ -367,15 +372,15 @@ export async function runResearchSession(
       catch (error) { lifecycleError ??= `Activity callback failed: ${errorText(error)}`; }
     });
     await session.bindExtensions({ onError });
-    if (agent === "researcher") {
+    if (selectedKetchTools.length) {
       await waitForKetchCapabilities({ getAllTools: () => session!.getAllTools(), getActiveTools: () => session!.getActiveToolNames() }, {
-        mode: "researcher", ...(signal ? { signal } : {}),
+        mode: "researcher", tools: selectedKetchTools, allowedTools: selectedTools, ...(signal ? { signal } : {}),
         ...(services.startupTimeoutMs !== undefined ? { timeoutMs: services.startupTimeoutMs } : {}),
       });
     }
     const active = session.getActiveToolNames();
     const callable = session.getCallableToolNames();
-    if ([active, callable].some((names) => names.length !== profile.tools.length || names.some((name) => !profile.tools.includes(name)))) {
+    if ([active, callable].some((names) => names.length !== selectedTools.length || names.some((name) => !selectedTools.includes(name)))) {
       throw new Error(`Child ${agent} tools do not match its exact policy.`);
     }
     signal?.throwIfAborted();
@@ -397,7 +402,7 @@ export async function runResearchSession(
     }
     report = final.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
     if (!report.trim()) throw new Error("Child finished with an empty final report.");
-    if (agent === "researcher" && activity.toolCalls === 0) {
+    if (agent === "researcher" && selectedKetchTools.length && ketchCalls === 0) {
       throw new Error("Researcher finished without using an external Ketch lookup; no sourced report is claimed. Use scout for local repository work.");
     }
   } catch (error) {

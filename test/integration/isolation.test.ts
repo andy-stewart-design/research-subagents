@@ -8,7 +8,7 @@ import type { Context, Model } from "@earendil-works/pi-ai";
 import { StdioTransport } from "@earendil-works/pi-mcp";
 import { createAgentSession, DefaultPackageManager, SettingsManager, type AgentSession, type CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../../lib/config.ts";
-import { getProfile, loadProfilePrompt, type ProfileName } from "../../lib/profiles.ts";
+import { getProfile, loadProfile, loadProfilePrompt, renderProfileSystemPrompt, type ProfileName, type ProfilePrompt } from "../../lib/profiles.ts";
 import { createChildModelRuntime, runResearchSession, type ResearchSessionOptions, type SessionServices } from "../../lib/session.ts";
 import { hasScoutBinary } from "../../lib/scout.ts";
 import { assistant, completedStream } from "../fixtures/session-fixtures.ts";
@@ -78,8 +78,16 @@ async function fixture(t: TestContext) {
 }
 
 interface ScriptRequest { readonly index: number; readonly context: Context; readonly model: Model<any>; readonly session: AgentSession }
-function nativeServices(agent: ProfileName, root: string, script: (request: ScriptRequest) => ReturnType<typeof assistant>, nativeOptions: { mcpTools?: string; expectedThinking?: CreateAgentSessionOptions["thinkingLevel"] } = {}) {
-  const { mcpTools } = nativeOptions;
+function nativeServices(agent: ProfileName, root: string, script: (request: ScriptRequest) => ReturnType<typeof assistant>, nativeOptions: {
+  mcpTools?: string;
+  expectedThinking?: CreateAgentSessionOptions["thinkingLevel"];
+  expectedTools?: readonly string[];
+  expectedPrompt?: string;
+  expectedExtensions?: number;
+} = {}) {
+  const { mcpTools, expectedExtensions = agent === "researcher" ? 1 : 0 } = nativeOptions;
+  const expectedTools = nativeOptions.expectedTools ?? getProfile(agent).tools;
+  const expectedPrompt = nativeOptions.expectedPrompt ?? renderProfileSystemPrompt({ text: loadProfilePrompt(agent), defaults: {}, tools: expectedTools });
   const sessions: AgentSession[] = [], launches: CreateAgentSessionOptions[] = [];
   const connections: string[] = [];
   const pids = new Set<number>();
@@ -95,8 +103,8 @@ function nativeServices(agent: ProfileName, root: string, script: (request: Scri
       runtime.streamSimple = (model, context) => {
         requests++;
         const session = currentSession!;
-        assert.deepEqual(session.getActiveToolNames().sort(), [...getProfile(agent).tools].sort());
-        assert.deepEqual(session.getCallableToolNames().sort(), [...getProfile(agent).tools].sort());
+        assert.deepEqual(session.getActiveToolNames().sort(), [...expectedTools].sort());
+        assert.deepEqual(session.getCallableToolNames().sort(), [...expectedTools].sort());
         assert.doesNotMatch(JSON.stringify(context), /DISCOVERED_\w+_SENTINEL|PARENT_HISTORY_SENTINEL/);
         return completedStream(script({ index: requests - 1, context, model, session }));
       };
@@ -126,8 +134,8 @@ function nativeServices(agent: ProfileName, root: string, script: (request: Scri
       assert.deepEqual(loader.getSkills().skills, []); assert.deepEqual(loader.getPrompts().prompts, []);
       assert.deepEqual(loader.getAgentsFiles().agentsFiles, []); assert.deepEqual(loader.getThemes().themes, []);
       assert.deepEqual(loader.getAppendSystemPrompt(), []);
-      assert.equal(loader.getSystemPrompt(), loadProfilePrompt(agent));
-      assert.equal(loader.getExtensions().extensions.length, agent === "researcher" ? 1 : 0);
+      assert.equal(loader.getSystemPrompt(), expectedPrompt);
+      assert.equal(loader.getExtensions().extensions.length, expectedExtensions);
       const result = await createAgentSession(input);
       const session = result.session;
       sessions.push(session);
@@ -232,6 +240,29 @@ test("native researcher waits for Ketch, never connects unrelated servers or exp
   for (const pid of native.pids) assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
   const calls = await fs.readFile(join(f.root, "mcp-calls.jsonl"), "utf8");
   assert.match(calls, /search/); assert.doesNotMatch(calls, /login/);
+  await assertUnchanged(f, initial);
+});
+
+test("native researcher Ketch subsets connect and expose only the selected MCP tools", { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t), initial = await before(f);
+  const bundled = loadProfile("researcher");
+  const profile: ProfilePrompt = { ...bundled, tools: ["mcp__ketch__search", "mcp__ketch__docs"] };
+  const native = nativeServices("researcher", f.root, ({ index, context, model }) => {
+    if (index === 0) {
+      return assistant([{ type: "toolCall", id: "subset-search", name: "mcp__ketch__search", arguments: { query: "subset" } }], "toolUse", 1, model);
+    }
+    const result = context.messages.findLast((message) => message.role === "toolResult");
+    assert.ok(result && result.role === "toolResult" && !result.isError);
+    return assistant("Subset lookup completed.", "stop", 1, model);
+  }, {
+    mcpTools: "search,docs", expectedTools: profile.tools, expectedPrompt: renderProfileSystemPrompt(profile), expectedExtensions: 1,
+  });
+  native.services.loadProfile = () => profile;
+  const result = await runResearchSession({ agent: "researcher", task: "Use only the selected Ketch subset." }, f.options, native.services);
+  assert.equal(result.status, "completed", result.handoff.text);
+  assert.deepEqual(native.connections, ["ketch"]);
+  const calls = await fs.readFile(join(f.root, "mcp-calls.jsonl"), "utf8");
+  assert.match(calls, /search/); assert.doesNotMatch(calls, /scrape|code|docs/);
   await assertUnchanged(f, initial);
 });
 
