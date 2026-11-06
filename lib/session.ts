@@ -11,7 +11,10 @@ import {
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { selectModel, type DispatchDefaults, type ModelSelection, type ResearchConfig } from "./config.ts";
 import { KETCH_TOOLS, createResearcherMcpExtension, waitForKetchCapabilities } from "./ketch.ts";
-import { loadProfile, parseResearchInput, renderProfileSystemPrompt, type ProfileName, type ProfilePrompt } from "./profiles.ts";
+import {
+  loadProfile, parseResearchInput, renderProfileSystemPrompt,
+  type ProfileName, type ProfilePrompt, type ProfileRegistry,
+} from "./profiles.ts";
 import { createDiagnosticHandoff, createReportHandoff, type ReportHandoff } from "./report.ts";
 import { createScoutTools, hasScoutBinary, requireScoutBinary, type ScoutBinaryCheck } from "./scout.ts";
 
@@ -39,6 +42,8 @@ export interface ResearchSessionOptions {
   readonly agentDir: string;
   readonly config: ResearchConfig;
   readonly parent: DispatchDefaults;
+  /** Discovery snapshot shared by schema, config, model selection, and this child. */
+  readonly profileRegistry?: ProfileRegistry;
   readonly signal?: AbortSignal;
   readonly scratchDir?: string;
   /** Runner-provided clock/start let activity timestamps share the run's elapsed-time origin. */
@@ -282,8 +287,10 @@ export async function runResearchSession(
   signal?.addEventListener("abort", onAbort, { once: true });
   try {
     signal?.throwIfAborted();
-    const { agent, task } = parseResearchInput(input);
-    const loadedProfile = (overrides.loadProfile ?? loadProfile)(agent);
+    const { agent, task } = parseResearchInput(input, options.profileRegistry);
+    const loadedProfile = overrides.loadProfile
+      ? overrides.loadProfile(agent)
+      : loadProfile(agent, options.profileRegistry);
     const profilePrompt = renderProfileSystemPrompt(loadedProfile);
     const selectedTools = loadedProfile.tools;
     const profileDefaults = loadedProfile.defaults;
@@ -293,7 +300,7 @@ export async function runResearchSession(
     }
     if (selectedTools.includes("grep")) requireScoutBinary("rg", services.hasScoutBinary);
     if (selectedTools.includes("find")) requireScoutBinary("fd", services.hasScoutBinary);
-    const selection = selectModel(agent, options.config, options.parent, profileDefaults);
+    const selection = selectModel(agent, options.config, options.parent, profileDefaults, options.profileRegistry);
     const runtime = await services.createModelRuntime(agentDir, selection, signal);
     signal?.throwIfAborted();
     const modelError = runtime.getError();

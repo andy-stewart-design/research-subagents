@@ -1,44 +1,43 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
+import { Type, type TSchema } from "typebox";
 import { KETCH_TOOLS } from "./ketch.ts";
-
-export const PROFILE_NAMES = Object.freeze(["scout", "researcher", "worker"] as const);
-export type ProfileName = (typeof PROFILE_NAMES)[number];
 
 /** Built-in Pi tools that may be selected by a bundled profile. */
 export const NATIVE_TOOLS = Object.freeze(["read", "write", "edit", "bash", "grep", "find", "ls"] as const);
 export const SUPPORTED_TOOLS = Object.freeze([...NATIVE_TOOLS, ...KETCH_TOOLS] as const);
 export type SupportedToolName = (typeof SUPPORTED_TOOLS)[number];
 
-export const ResearchInputSchema = Type.Object(
-  {
-    agent: Type.Union([Type.Literal("scout"), Type.Literal("researcher"), Type.Literal("worker")]),
-    task: Type.String({
-      minLength: 1,
-      pattern: "\\S",
-      description: "Self-contained research question and necessary context.",
-    }),
-  },
-  { additionalProperties: false },
-);
+const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const MODEL_PATTERN = /^[^/\s]+\/\S+$/u;
+const SAFE_PROFILE_NAME = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
+const RESERVED_PROFILE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+const DEFAULT_AGENTS_DIR = fileURLToPath(new URL("../agents/", import.meta.url));
 
-export type ResearchInput = Static<typeof ResearchInputSchema>;
-
-export function parseResearchInput(input: unknown): ResearchInput {
-  if (!Value.Check(ResearchInputSchema, input)) {
-    throw new Error(
-      'Invalid research input: provide only agent ("scout", "researcher", or "worker") and a non-whitespace task.',
-    );
-  }
-  const { agent, task } = input as ResearchInput;
-  // Keep the task literal: validation must not trim, expand, or execute it.
-  return { agent, task };
+interface BundledFallback {
+  readonly description: string;
+  readonly tools: readonly string[];
 }
 
+const BUNDLED_FALLBACKS: Readonly<Record<string, BundledFallback>> = Object.freeze({
+  scout: Object.freeze({
+    description: "Read-only local code investigation with precise file references.",
+    tools: Object.freeze(["read", "grep", "find", "ls"]),
+  }),
+  researcher: Object.freeze({
+    description: "External research with sourced, compact findings.",
+    tools: KETCH_TOOLS,
+  }),
+  worker: Object.freeze({
+    description: "General-purpose repository implementation with file edits and shell verification.",
+    tools: Object.freeze(["read", "write", "edit", "bash"]),
+  }),
+});
+
 export interface Profile {
-  readonly name: ProfileName;
+  readonly name: string;
   readonly description: string;
   readonly tools: readonly string[];
 }
@@ -51,52 +50,100 @@ export interface ProfileDefaults {
 export interface ProfilePrompt {
   readonly text: string;
   readonly defaults: ProfileDefaults;
-  /** Effective allowlist from markdown, or the profile's current default when omitted. */
+  /** Effective allowlist from markdown, or the profile's safe default when omitted. */
   readonly tools: readonly string[];
+  /** Optional public description from frontmatter. */
+  readonly description?: string;
 }
 
-// These are the fallback defaults used when a profile omits tools frontmatter; markdown remains the source of truth when present.
-export const PROFILES: Readonly<Record<ProfileName, Profile>> = Object.freeze({
-  scout: Object.freeze({
-    name: "scout",
-    description: "Read-only local code investigation with precise file references.",
-    tools: Object.freeze(["read", "grep", "find", "ls"]),
-  }),
-  researcher: Object.freeze({
-    name: "researcher",
-    description: "External research with sourced, compact findings.",
-    tools: KETCH_TOOLS,
-  }),
-  worker: Object.freeze({
-    name: "worker",
-    description: "General-purpose repository implementation with file edits and shell verification.",
-    tools: Object.freeze(["read", "write", "edit", "bash"]),
-  }),
-});
+export interface ProfileRegistry {
+  readonly names: readonly string[];
+  readonly profiles: Readonly<Record<string, Profile>>;
+  readonly prompts: Readonly<Record<string, ProfilePrompt>>;
+  readonly inputSchema: TSchema;
+}
 
-export function getProfile(name: ProfileName): Profile {
-  if (!Object.hasOwn(PROFILES, name)) {
-    throw new Error("Unknown research profile: expected scout, researcher, or worker.");
+/** Profile names are discovered at runtime; this alias keeps public APIs open to custom names. */
+export type ProfileName = string;
+/** The names shipped by this package, for callers that want a narrower bundled-only type. */
+export type BundledProfileName = "scout" | "researcher" | "worker";
+
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return value;
+  const object = value as object;
+  if (seen.has(object)) return value;
+  seen.add(object);
+  for (const key of Reflect.ownKeys(object)) deepFreeze(Reflect.get(object, key), seen);
+  return Object.freeze(value);
+}
+
+function literalUnion(names: readonly string[]): TSchema {
+  const literals = names.map((name) => Type.Literal(name));
+  return literals.length === 1 ? literals[0]! : Type.Union(literals as unknown as [TSchema, TSchema, ...TSchema[]]);
+}
+
+export function createResearchInputSchema(registry: ProfileRegistry): TSchema {
+  return deepFreeze(Type.Object(
+    {
+      agent: literalUnion(registry.names),
+      task: Type.String({
+        minLength: 1,
+        pattern: "\\S",
+        description: "Self-contained research question and necessary context.",
+      }),
+    },
+    { additionalProperties: false },
+  ));
+}
+
+export interface ResearchInput {
+  readonly agent: ProfileName;
+  readonly task: string;
+}
+
+function profileNames(registry: ProfileRegistry): string {
+  return registry.names.join('", "');
+}
+
+function validResearchInput(input: unknown, registry: ProfileRegistry): input is { agent: string; task: string } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  const value = input as Record<string, unknown>;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 2 || !Object.hasOwn(value, "agent") || !Object.hasOwn(value, "task")) return false;
+  return typeof value.agent === "string" && registry.names.includes(value.agent)
+    && typeof value.task === "string" && value.task.length >= 1 && /\S/u.test(value.task);
+}
+
+export function parseResearchInput(input: unknown, registry?: ProfileRegistry): ResearchInput {
+  const active = registry ?? DEFAULT_PROFILE_REGISTRY;
+  // Do not rely solely on the exported TypeBox object: consumers can otherwise mutate a schema
+  // before this parser sees it. Membership and exact shape are checked against this snapshot.
+  if (!validResearchInput(input, active)) {
+    throw new Error(
+      `Invalid research input: provide only agent ("${profileNames(active)}") and a non-whitespace task.`,
+    );
   }
-  return PROFILES[name];
+  // Keep the task literal: validation must not trim, expand, or execute it.
+  return { agent: input.agent, task: input.task };
 }
 
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-const MODEL_PATTERN = /^[^/\s]+\/\S+$/u;
+function fallbackFor(name: string): BundledFallback | undefined {
+  return Object.hasOwn(BUNDLED_FALLBACKS, name) ? BUNDLED_FALLBACKS[name] : undefined;
+}
+
+function defaultToolsFor(name: string): readonly string[] {
+  // Existing bundled profiles retain their historical defaults. New profiles must opt into
+  // tools explicitly; omission therefore fails closed with no effective tools.
+  return fallbackFor(name)?.tools ?? [];
+}
 
 function stripInlineComment(value: string): string {
   let quote: string | undefined;
   let escaped = false;
   for (let index = 0; index < value.length; index++) {
     const character = value[index]!;
-    if (quote === "\"" && escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote === "\"" && character === "\\") {
-      escaped = true;
-      continue;
-    }
+    if (quote === "\"" && escaped) { escaped = false; continue; }
+    if (quote === "\"" && character === "\\") { escaped = true; continue; }
     if (quote) {
       if (character === quote) quote = undefined;
     } else if (character === "\"" || character === "'") {
@@ -121,21 +168,12 @@ function splitToolList(value: string): string[] {
   for (let index = 0; index < source.length; index++) {
     const character = source[index]!;
     if (quote) {
-      if (quote === "\"" && character === "\\" && index + 1 < source.length) {
-        current += source[++index]!;
-      } else if (character === quote) {
-        quote = undefined;
-      } else {
-        current += character;
-      }
-    } else if (character === "\"" || character === "'") {
-      quote = character;
-    } else if (character === ",") {
-      values.push(current.trim());
-      current = "";
-    } else {
-      current += character;
-    }
+      if (quote === "\"" && character === "\\" && index + 1 < source.length) current += source[++index]!;
+      else if (character === quote) quote = undefined;
+      else current += character;
+    } else if (character === "\"" || character === "'") quote = character;
+    else if (character === ",") { values.push(current.trim()); current = ""; }
+    else current += character;
   }
   if (quote) throw new Error("unterminated quote");
   values.push(current.trim());
@@ -158,7 +196,7 @@ function unwrapScalar(value: string): string {
   return value;
 }
 
-function parseTools(name: ProfileName, raw: string | undefined, defaults: readonly string[]): readonly string[] {
+function parseTools(name: string, raw: string | undefined, defaults: readonly string[]): readonly string[] {
   if (raw === undefined) return defaults;
   const value = stripInlineComment(raw);
   if (!value) throw new Error(`Invalid ${name} prompt tools: expected [] or a comma-separated list.`);
@@ -168,21 +206,22 @@ function parseTools(name: ProfileName, raw: string | undefined, defaults: readon
   }
   let tools: string[];
   try { tools = splitToolList(unwrapped); }
-  catch (error) {
-    throw new Error(`Invalid ${name} prompt tools: ${error instanceof Error ? error.message : "invalid list"}.`);
-  }
+  catch (error) { throw new Error(`Invalid ${name} prompt tools: ${error instanceof Error ? error.message : "invalid list"}.`); }
   const seen = new Set<string>();
   for (const tool of tools) {
-    if (!(SUPPORTED_TOOLS as readonly string[]).includes(tool)) {
-      throw new Error(`Invalid ${name} prompt tool "${tool}": unsupported tool name.`);
-    }
+    if (!(SUPPORTED_TOOLS as readonly string[]).includes(tool)) throw new Error(`Invalid ${name} prompt tool "${tool}": unsupported tool name.`);
     if (seen.has(tool)) throw new Error(`Invalid ${name} prompt tools: duplicate tool "${tool}".`);
     seen.add(tool);
   }
   return Object.freeze(tools);
 }
 
-export function parseProfilePrompt(name: ProfileName, source: string): ProfilePrompt {
+interface ParsedFrontmatter {
+  readonly metadata: Readonly<Record<string, string>>;
+  readonly text: string;
+}
+
+function parseFrontmatter(name: string, source: string): ParsedFrontmatter {
   const match = /^(?:---\r?\n([\s\S]*?)\r?\n---\r?\n?)([\s\S]*)$/u.exec(source);
   const metadata: Record<string, string> = {};
   const text = match ? match[2]! : source;
@@ -193,36 +232,131 @@ export function parseProfilePrompt(name: ProfileName, source: string): ProfilePr
       if (separator <= 0) throw new Error(`Invalid ${name} prompt frontmatter: expected key: value.`);
       const key = line.slice(0, separator).trim();
       const value = stripInlineComment(line.slice(separator + 1));
-      if (!value && key !== "tools") {
+      if (!value && key !== "tools") throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
+      if (!["model", "thinking", "tools", "description"].includes(key)) {
         throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
       }
-      if (!["model", "thinking", "tools"].includes(key)) {
-        throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
-      }
-      if (Object.hasOwn(metadata, key)) {
-        throw new Error(`Invalid ${name} prompt frontmatter: duplicate ${key}.`);
-      }
+      if (Object.hasOwn(metadata, key)) throw new Error(`Invalid ${name} prompt frontmatter: duplicate ${key}.`);
       metadata[key] = value;
     }
   }
+  return { metadata, text };
+}
+
+export function parseProfilePrompt(
+  name: string,
+  source: string,
+  fallbackTools: readonly string[] = defaultToolsFor(name),
+): ProfilePrompt {
+  const { metadata, text } = parseFrontmatter(name, source);
   if (!text.trim()) throw new Error(`Bundled ${name} prompt is empty.`);
-  const model = metadata.model?.replace(/^("|')|("|')$/gu, "");
-  const thinking = metadata.thinking?.replace(/^("|')|("|')$/gu, "");
-  if (model !== undefined && !MODEL_PATTERN.test(model)) {
-    throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
-  }
-  if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ThinkingLevel)) {
-    throw new Error(`Invalid ${name} prompt thinking level: ${thinking}.`);
-  }
-  const defaults = getProfile(name).tools;
+  const model = metadata.model === undefined ? undefined : unwrapScalar(metadata.model);
+  const thinking = metadata.thinking === undefined ? undefined : unwrapScalar(metadata.thinking);
+  const description = metadata.description === undefined ? undefined : unwrapScalar(metadata.description).trim();
+  if (description !== undefined && !description) throw new Error(`Invalid ${name} prompt description: expected non-empty text.`);
+  if (model !== undefined && !MODEL_PATTERN.test(model)) throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
+  if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ThinkingLevel)) throw new Error(`Invalid ${name} prompt thinking level: ${thinking}.`);
   return {
     text,
-    tools: parseTools(name, metadata.tools, defaults),
+    tools: parseTools(name, metadata.tools, fallbackTools),
     defaults: Object.freeze({
       ...(model !== undefined ? { model } : {}),
       ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
     }),
+    ...(description !== undefined ? { description } : {}),
   };
+}
+
+function invalidAgentFilename(name: string): never {
+  throw new Error(`Invalid agent filename "${name}": use a safe lowercase name such as reviewer.md.`);
+}
+
+function definitionFiles(agentsDir: string): Dirent[] {
+  let entries: Dirent[];
+  try { entries = readdirSync(agentsDir, { withFileTypes: true }); }
+  catch (error) { throw new Error(`Unable to discover agents in ${agentsDir}.`, { cause: error }); }
+  return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !entry.name.startsWith("."))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function discoverProfiles(agentsDir = DEFAULT_AGENTS_DIR): ProfileRegistry {
+  const files = definitionFiles(agentsDir);
+  const profiles: Record<string, Profile> = Object.create(null) as Record<string, Profile>;
+  const prompts: Record<string, ProfilePrompt> = Object.create(null) as Record<string, ProfilePrompt>;
+  const names: string[] = [];
+  for (const file of files) {
+    if (file.name === "README.md") continue;
+    const name = file.name.slice(0, -3);
+    if (!SAFE_PROFILE_NAME.test(name) || RESERVED_PROFILE_NAMES.has(name)) invalidAgentFilename(file.name);
+    if (Object.hasOwn(profiles, name)) throw new Error(`Duplicate agent definition for "${name}" in ${agentsDir}.`);
+    const path = join(agentsDir, file.name);
+    let source: string;
+    try { source = readFileSync(path, "utf8"); }
+    catch (error) { throw new Error(`Unable to read agent definition ${path}.`, { cause: error }); }
+    let prompt: ProfilePrompt;
+    try { prompt = parseProfilePrompt(name, source); }
+    catch (error) { throw new Error(`Invalid agent definition ${path}: ${error instanceof Error ? error.message : "invalid definition"}`, { cause: error }); }
+    const fallback = fallbackFor(name);
+    const description = prompt.description || fallback?.description || `Custom ${name} agent.`;
+    const profile = Object.freeze({ name, description, tools: Object.freeze([...prompt.tools]) });
+    profiles[name] = profile;
+    prompts[name] = Object.freeze({ ...prompt, description });
+    names.push(name);
+  }
+  if (!names.length) throw new Error(`No agent definitions found in ${agentsDir}.`);
+  names.sort((left, right) => {
+    const leftIndex = Object.keys(BUNDLED_FALLBACKS).indexOf(left);
+    const rightIndex = Object.keys(BUNDLED_FALLBACKS).indexOf(right);
+    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
+    if (leftIndex >= 0) return -1;
+    if (rightIndex >= 0) return 1;
+    return left.localeCompare(right);
+  });
+  const frozenNames = Object.freeze(names);
+  const orderedProfiles: Record<string, Profile> = Object.create(null) as Record<string, Profile>;
+  const orderedPrompts: Record<string, ProfilePrompt> = Object.create(null) as Record<string, ProfilePrompt>;
+  for (const name of frozenNames) {
+    orderedProfiles[name] = profiles[name]!;
+    orderedPrompts[name] = prompts[name]!;
+  }
+  return Object.freeze({
+    names: frozenNames,
+    profiles: Object.freeze(orderedProfiles),
+    prompts: Object.freeze(orderedPrompts),
+    inputSchema: createResearchInputSchema({
+      names: frozenNames, profiles: orderedProfiles, prompts: orderedPrompts,
+      inputSchema: undefined as unknown as TSchema,
+    }),
+  });
+}
+
+export const DEFAULT_PROFILE_REGISTRY = discoverProfiles();
+export const PROFILE_NAMES = DEFAULT_PROFILE_REGISTRY.names;
+export const PROFILES = DEFAULT_PROFILE_REGISTRY.profiles;
+export const ResearchInputSchema = DEFAULT_PROFILE_REGISTRY.inputSchema;
+
+export function getProfile(name: ProfileName, registry = DEFAULT_PROFILE_REGISTRY): Profile {
+  if (!Object.hasOwn(registry.profiles, name)) {
+    throw new Error(`Unknown research profile: expected ${registry.names.join(", ")}.`);
+  }
+  return registry.profiles[name]!;
+}
+
+export function loadProfilePrompt(name: ProfileName, registry = DEFAULT_PROFILE_REGISTRY): string {
+  return loadProfile(name, registry).text;
+}
+
+export function loadProfileDefaults(name: ProfileName, registry = DEFAULT_PROFILE_REGISTRY): ProfileDefaults {
+  return loadProfile(name, registry).defaults;
+}
+
+export function loadProfileTools(name: ProfileName, registry = DEFAULT_PROFILE_REGISTRY): readonly string[] {
+  return loadProfile(name, registry).tools;
+}
+
+export function loadProfile(name: ProfileName, registry = DEFAULT_PROFILE_REGISTRY): ProfilePrompt {
+  getProfile(name, registry);
+  return registry.prompts[name]!;
 }
 
 /** Add the request-local tool policy that frontmatter cannot convey after it is stripped. */
@@ -231,20 +365,6 @@ export function renderProfileSystemPrompt(profile: ProfilePrompt): string {
   return `${profile.text.trimEnd()}\n\nRuntime tool policy: this child session has exactly these effective tools (and no others): ${tools}.`;
 }
 
-export function loadProfilePrompt(name: ProfileName): string {
-  return loadProfile(name).text;
-}
-
-export function loadProfileDefaults(name: ProfileName): ProfileDefaults {
-  return loadProfile(name).defaults;
-}
-
-export function loadProfileTools(name: ProfileName): readonly string[] {
-  return loadProfile(name).tools;
-}
-
-export function loadProfile(name: ProfileName): ProfilePrompt {
-  const profile = getProfile(name);
-  const path = new URL(`../agents/${profile.name}.md`, import.meta.url);
-  return parseProfilePrompt(name, readFileSync(path, "utf8"));
+export function describeProfiles(registry = DEFAULT_PROFILE_REGISTRY): string {
+  return registry.names.map((name) => `${name} (${registry.profiles[name]!.description})`).join("; ");
 }

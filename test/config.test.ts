@@ -20,7 +20,8 @@ function fixture(t: TestContext): string {
 
 test("defaults have concurrency two and no research timeout or other budget", () => {
   const config = parseConfig({});
-  assert.deepEqual(config, { maxConcurrency: 2, profiles: {} });
+  assert.equal(config.maxConcurrency, 2);
+  assert.deepEqual({ ...config.profiles }, {});
   assert.equal(Object.hasOwn(config, "timeoutMs"), false);
 });
 
@@ -34,7 +35,8 @@ test("explicit concurrency, timeout, and per-profile overrides are preserved", (
       worker: { model: "provider/worker", thinking: "medium" },
     },
   };
-  assert.deepEqual(parseConfig(input), input);
+  const parsed = parseConfig(input);
+  assert.deepEqual({ ...parsed, profiles: { ...parsed.profiles } }, input);
 });
 
 test("all target SDK thinking levels are accepted", () => {

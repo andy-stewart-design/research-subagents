@@ -1,6 +1,8 @@
 import { createDiagnosticHandoff } from "./report.ts";
 import { selectModel } from "./config.ts";
-import { loadProfileDefaults, parseResearchInput, type ResearchInput } from "./profiles.ts";
+import {
+  loadProfileDefaults, parseResearchInput, type ProfileRegistry, type ResearchInput,
+} from "./profiles.ts";
 import {
   runResearchSession,
   type ResearchSessionOptions,
@@ -29,6 +31,7 @@ export interface ResearchRunnerOptions {
   /** Undefined means that no research deadline is allocated. */
   readonly timeoutMs?: number;
   readonly services?: Partial<SessionServices>;
+  readonly profileRegistry?: ProfileRegistry;
   readonly runSession?: typeof runResearchSession;
   readonly now?: () => number;
   readonly onStatus?: (status: ResearchRunStatus) => void;
@@ -41,6 +44,7 @@ interface RunEntry {
   readonly resolve: (outcome: SessionOutcome) => void;
   readonly queuedAt: number;
   readonly controller: AbortController;
+  readonly profileRegistry: ProfileRegistry | undefined;
   readonly onStatus: ((status: ResearchRunStatus) => void) | undefined;
   removeCallerAbort?: () => void;
   completion: Promise<void>;
@@ -69,9 +73,16 @@ function snapshotActivity(activity: SessionOutcome["activity"]): SessionOutcome[
   };
 }
 
-function selectedModel(input: ResearchInput, options: ResearchSessionOptions): { model?: string; thinkingLevel?: string } {
+function selectedModel(
+  input: ResearchInput,
+  options: ResearchSessionOptions,
+  registry?: ProfileRegistry,
+): { model?: string; thinkingLevel?: string } {
   try {
-    const selection = selectModel(input.agent, options.config, options.parent, loadProfileDefaults(input.agent));
+    const selection = selectModel(
+      input.agent, options.config, options.parent,
+      loadProfileDefaults(input.agent, registry ?? options.profileRegistry), registry ?? options.profileRegistry,
+    );
     return {
       model: `${selection.provider}/${selection.modelId}`,
       ...(selection.thinkingLevel !== undefined ? { thinkingLevel: selection.thinkingLevel } : {}),
@@ -113,6 +124,7 @@ export class ResearchRunner {
   private readonly maxConcurrency: number;
   private readonly timeoutMs: number | undefined;
   private readonly services: Partial<SessionServices> | undefined;
+  private readonly profileRegistry: ProfileRegistry | undefined;
   private readonly runSession: typeof runResearchSession;
   private readonly now: () => number;
   private readonly onStatus: ((status: ResearchRunStatus) => void) | undefined;
@@ -133,6 +145,7 @@ export class ResearchRunner {
     this.maxConcurrency = options.maxConcurrency;
     this.timeoutMs = options.timeoutMs;
     this.services = options.services;
+    this.profileRegistry = options.profileRegistry;
     this.runSession = options.runSession ?? runResearchSession;
     this.now = options.now ?? Date.now;
     this.onStatus = options.onStatus;
@@ -147,8 +160,13 @@ export class ResearchRunner {
     onStatus?: (status: ResearchRunStatus) => void,
   ): Promise<SessionOutcome> {
     let parsed: ResearchInput;
+    let activeRegistry: ProfileRegistry | undefined;
     try {
-      parsed = parseResearchInput(input);
+      if (this.profileRegistry && options.profileRegistry && this.profileRegistry !== options.profileRegistry) {
+        throw new Error("Research profile registry snapshot mismatch between the runner and session options.");
+      }
+      activeRegistry = this.profileRegistry ?? options.profileRegistry;
+      parsed = parseResearchInput(input, activeRegistry);
     } catch (error) {
       return Promise.resolve({
         status: "failed",
@@ -165,12 +183,12 @@ export class ResearchRunner {
     }
 
     const queuedAt = this.now();
-    const display = selectedModel(parsed, options);
+    const display = selectedModel(parsed, options, activeRegistry);
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
       const entry: RunEntry = {
-        id: this.nextId++, input: parsed, options, resolve, queuedAt, controller, onStatus,
-        ...display,
+        id: this.nextId++, input: parsed, options, resolve, queuedAt, controller,
+        profileRegistry: activeRegistry, onStatus, ...display,
         state: "queued", completion: Promise.resolve(), timer: undefined, timedOut: false,
         interruption: undefined, cancellationRequested: false, shutdownRequested: false, settled: false,
       };
@@ -241,6 +259,7 @@ export class ResearchRunner {
     try {
       const childOptions: ResearchSessionOptions = {
         ...entry.options,
+        ...(entry.profileRegistry ? { profileRegistry: entry.profileRegistry } : {}),
         signal: entry.controller.signal,
         ...(entry.startedAt !== undefined ? { startedAt: entry.startedAt } : {}),
         now: this.now,

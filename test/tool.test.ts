@@ -24,7 +24,7 @@ function extensionHarness(
   runSession: NonNullable<ConstructorParameters<typeof ResearchRunner>[0]>["runSession"] = async () => outcome(),
   loadConfig: () => ReturnType<typeof parseConfig> = () => parseConfig({}),
   getMcpServers: () => readonly { name: string; config: McpServerConfig }[] = () => [],
-  loadProfileTools?: (agent: "scout" | "researcher" | "worker") => readonly string[],
+  loadProfileTools?: (agent: string) => readonly string[],
 ) {
   let tool: any;
   const handlers = new Map<string, (event: any, ctx?: any) => any>();

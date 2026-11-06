@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { Type, type Static } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { PROFILE_NAMES, getProfile, type ProfileDefaults, type ProfileName } from "./profiles.ts";
+import {
+  DEFAULT_PROFILE_REGISTRY, getProfile, type ProfileDefaults, type ProfileName, type ProfileRegistry,
+} from "./profiles.ts";
 
 export const CONFIG_FILENAME = "research-subagents.json";
 export const DEFAULT_MAX_CONCURRENCY = 2;
@@ -23,58 +25,72 @@ const ProfileOverridesSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const ResearchConfigSchema = Type.Object(
-  {
-    maxConcurrency: Type.Optional(
-      Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-    ),
-    timeoutMs: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
-    profiles: Type.Optional(
-      Type.Object(
-        {
-          scout: Type.Optional(ProfileOverridesSchema),
-          researcher: Type.Optional(ProfileOverridesSchema),
-          worker: Type.Optional(ProfileOverridesSchema),
-        },
-        { additionalProperties: false },
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) return value;
+  const object = value as object;
+  if (seen.has(object)) return value;
+  seen.add(object);
+  for (const key of Reflect.ownKeys(object)) deepFreeze(Reflect.get(object, key), seen);
+  return Object.freeze(value);
+}
+
+export function createResearchConfigSchema(registry: ProfileRegistry): ReturnType<typeof Type.Object> {
+  const profileProperties: Record<string, TSchema> = Object.create(null) as Record<string, TSchema>;
+  for (const name of registry.names) profileProperties[name] = Type.Optional(ProfileOverridesSchema);
+  return deepFreeze(Type.Object(
+    {
+      maxConcurrency: Type.Optional(
+        Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
       ),
-    ),
-  },
-  { additionalProperties: false },
-);
+      timeoutMs: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+      profiles: Type.Optional(Type.Object(profileProperties, { additionalProperties: false })),
+    },
+    { additionalProperties: false },
+  ));
+}
+
+export const ResearchConfigSchema = createResearchConfigSchema(DEFAULT_PROFILE_REGISTRY);
+const CONFIG_REGISTRIES = new WeakMap<object, ProfileRegistry>();
 
 export type ProfileOverrides = Readonly<Static<typeof ProfileOverridesSchema>>;
 
 export interface ResearchConfig {
   readonly maxConcurrency: number;
   readonly timeoutMs?: number;
-  readonly profiles: Readonly<Partial<Record<ProfileName, ProfileOverrides>>>;
+  readonly profiles: Readonly<Partial<Record<string, ProfileOverrides>>>;
 }
 
-export function parseConfig(input: unknown): ResearchConfig {
-  if (!Value.Check(ResearchConfigSchema, input)) {
-    const error = Value.Errors(ResearchConfigSchema, input)[0];
+export function parseConfig(input: unknown, registry: ProfileRegistry = DEFAULT_PROFILE_REGISTRY): ResearchConfig {
+  const schema = createResearchConfigSchema(registry);
+  if (!Value.Check(schema, input)) {
+    const error = Value.Errors(schema, input)[0];
     throw new Error(
       `Invalid research configuration at ${error?.instancePath || "/"}: ${error?.message || "expected a configuration object"}`,
     );
   }
-  const raw = input as Static<typeof ResearchConfigSchema>;
-  const profiles: Partial<Record<ProfileName, ProfileOverrides>> = {};
-  for (const name of PROFILE_NAMES) {
-    const override = raw.profiles?.[name];
+  const raw = input as {
+    readonly maxConcurrency?: number;
+    readonly timeoutMs?: number;
+    readonly profiles?: Readonly<Record<string, ProfileOverrides>>;
+  };
+  const profiles: Partial<Record<ProfileName, ProfileOverrides>> = Object.create(null) as Partial<Record<ProfileName, ProfileOverrides>>;
+  for (const name of registry.names) {
+    const override = raw.profiles && Object.hasOwn(raw.profiles, name) ? raw.profiles[name] : undefined;
     if (override !== undefined) {
-      profiles[name] = Object.freeze({ ...override });
+      (profiles as Record<string, ProfileOverrides>)[name] = Object.freeze({ ...override });
     }
   }
-  return Object.freeze({
+  const result = Object.freeze({
     maxConcurrency: raw.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
     ...(raw.timeoutMs !== undefined ? { timeoutMs: raw.timeoutMs } : {}),
     profiles: Object.freeze(profiles),
   });
+  CONFIG_REGISTRIES.set(result, registry);
+  return result;
 }
 
 // The future host supplies getAgentDir(); pure policy/config loading does not import or start Pi.
-export function loadConfig(agentDir: string): ResearchConfig {
+export function loadConfig(agentDir: string, registry?: ProfileRegistry): ResearchConfig {
   if (!isAbsolute(agentDir)) {
     throw new Error("Research configuration requires an absolute agent directory.");
   }
@@ -84,7 +100,7 @@ export function loadConfig(agentDir: string): ResearchConfig {
     text = readFileSync(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return parseConfig({});
+      return parseConfig({}, registry ?? DEFAULT_PROFILE_REGISTRY);
     }
     throw new Error(`Unable to read research configuration at ${path}.`, { cause: error });
   }
@@ -96,7 +112,7 @@ export function loadConfig(agentDir: string): ResearchConfig {
     throw new Error(`Invalid JSON in research configuration at ${path}.`);
   }
   try {
-    return parseConfig(input);
+    return parseConfig(input, registry ?? DEFAULT_PROFILE_REGISTRY);
   } catch (error) {
     throw new Error(`Invalid research configuration file ${path}: ${(error as Error).message}`);
   }
@@ -115,13 +131,17 @@ export interface ModelSelection {
 
 // Selection data only: the SDK adapter must validate availability/auth and clamp thinking later.
 export function selectModel(
-  name: ProfileName,
+  name: string,
   config: ResearchConfig,
   parent: DispatchDefaults,
   defaults: ProfileDefaults = {},
+  registry?: ProfileRegistry,
 ): ModelSelection {
-  getProfile(name);
-  const override = config.profiles[name];
+  const activeRegistry = registry ?? CONFIG_REGISTRIES.get(config) ?? DEFAULT_PROFILE_REGISTRY;
+  getProfile(name, activeRegistry);
+  const override = Object.hasOwn(config.profiles, name)
+    ? (config.profiles as Readonly<Record<string, ProfileOverrides>>)[name]
+    : undefined;
   const model = override?.model ?? defaults.model;
   const separator = model?.indexOf("/") ?? -1;
   const provider = model !== undefined ? model.slice(0, separator) : parent.model?.provider;

@@ -61,7 +61,7 @@ export function previewTask(task: string): string {
 export function detailsFromStatus(status: ResearchRunStatus): ResearchToolDetails {
   return {
     status: status.state,
-    agent: status.agent ?? "scout",
+    agent: status.agent ?? "unknown" as ResearchInput["agent"],
     task: previewTask(status.task ?? ""),
     ...(status.activity ? { activity: status.activity } : {}),
     ...(status.elapsedMs !== undefined ? { elapsedMs: status.elapsedMs } : {}),

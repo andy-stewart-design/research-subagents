@@ -6,7 +6,10 @@ import {
   detailsFromStatus, formatResearchProgress, previewTask, renderResearchCall, renderResearchResult,
   type ResearchToolDetails,
 } from "../lib/render.ts";
-import { loadProfileTools, parseResearchInput, ResearchInputSchema, type ResearchInput } from "../lib/profiles.ts";
+import {
+  describeProfiles, discoverProfiles, loadProfileTools, parseResearchInput,
+  type ProfileRegistry, type ResearchInput,
+} from "../lib/profiles.ts";
 import { createResearchRunner, type ResearchRunStatus, type ResearchRunner } from "../lib/runner.ts";
 import { KETCH_TOOLS, validateParentKetchTransport } from "../lib/ketch.ts";
 import type { SessionOutcome } from "../lib/session.ts";
@@ -60,12 +63,14 @@ function sessionOptions(
   agentDir: string,
   workspaceDir: string,
   signal: AbortSignal | undefined,
+  profileRegistry: ProfileRegistry,
 ): Parameters<ResearchRunner["run"]>[1] {
   return {
     cwd: ctx.cwd,
     workspaceDir,
     agentDir,
     config,
+    profileRegistry,
     parent: parentDefaults(ctx),
     ...(signal ? { signal } : {}),
   };
@@ -124,10 +129,11 @@ async function executeResearch(
   ctx: ExtensionToolContext,
   signal: AbortSignal | undefined,
   onUpdate: ((result: ResearchToolResult) => void) | undefined,
+  profileRegistry: ProfileRegistry,
 ): Promise<ResearchToolResult> {
   const workspaceDir = resolveWorkspaceRoot(ctx.cwd);
   let finalStatus: ResearchRunStatus | undefined;
-  const outcome = await runner.run(input, sessionOptions(ctx, config, agentDir, workspaceDir, signal), (status) => {
+  const outcome = await runner.run(input, sessionOptions(ctx, config, agentDir, workspaceDir, signal, profileRegistry), (status) => {
     finalStatus = status;
     try { onUpdate?.(progressResult(status)); } catch { /* Progress is never execution-critical. */ }
   });
@@ -143,16 +149,22 @@ async function executeResearch(
 
 export interface ResearchExtensionDependencies {
   readonly getAgentDir?: () => string;
-  readonly loadConfig?: (agentDir: string) => ResearchConfig;
+  readonly profileRegistry?: ProfileRegistry;
+  readonly loadConfig?: (agentDir: string, registry?: ProfileRegistry) => ResearchConfig;
   readonly loadProfileTools?: (agent: ResearchInput["agent"]) => readonly string[];
-  readonly createRunner?: (config: ResearchConfig) => ResearchRunner;
+  readonly createRunner?: (config: ResearchConfig, registry?: ProfileRegistry) => ResearchRunner;
 }
 
 export function createResearchExtension(dependencies: ResearchExtensionDependencies = {}) {
+  // One immutable snapshot is shared by the public schema, config, launch, and child session.
+  // Pi reloads the extension to pick up files added or removed from the bundled agents folder.
+  const profileRegistry = dependencies.profileRegistry ?? discoverProfiles();
   const getAgentDirForExtension = dependencies.getAgentDir ?? getAgentDir;
-  const loadConfigForExtension = dependencies.loadConfig ?? loadConfig;
-  const loadProfileToolsForExtension = dependencies.loadProfileTools ?? loadProfileTools;
-  const createRunnerForExtension = dependencies.createRunner ?? createResearchRunner;
+  const loadConfigForExtension = dependencies.loadConfig ?? ((agentDir: string, registry?: ProfileRegistry) => loadConfig(agentDir, registry));
+  const loadProfileToolsForExtension = dependencies.loadProfileTools ?? ((agent: ResearchInput["agent"]) => loadProfileTools(agent, profileRegistry));
+  const createRunnerForExtension = dependencies.createRunner ?? ((config: ResearchConfig, registry?: ProfileRegistry) =>
+    createResearchRunner(config, registry ? { profileRegistry: registry } : {}));
+  const profilesDescription = describeProfiles(profileRegistry);
 
   return function (pi: ExtensionAPI) {
     let runner: ResearchRunner | undefined;
@@ -160,8 +172,8 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
 
     const getRunner = (agentDir: string): ResearchRunner => {
       if (!runner) {
-        runnerConfig = loadConfigForExtension(agentDir);
-        runner = createRunnerForExtension(runnerConfig);
+        runnerConfig = loadConfigForExtension(agentDir, profileRegistry);
+        runner = createRunnerForExtension(runnerConfig, profileRegistry);
       }
       return runner;
     };
@@ -169,22 +181,22 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     pi.registerTool({
       name: SUBAGENT_TOOL,
       label: "subagent",
-      description: "Delegate multi-step investigations or implementation tasks to a fresh isolated child: choose Scout for local repository work, Researcher for external web/docs work, or Worker for repository changes; use direct tools for a single focused lookup.",
+      description: `Delegate multi-step investigations or implementation tasks to a fresh isolated child. Available profiles: ${profilesDescription}. Use direct tools for a single focused lookup.`,
       promptSnippet: "delegate multi-step investigations to a fresh isolated context",
       promptGuidelines: [
-        "Choose scout for local paths, repository code, and file audits; choose researcher only for external web/docs/OSS research; choose worker when the child must edit files or run repository commands. If a task needs both research and implementation, make separate delegated calls rather than giving Scout or Researcher write access.",
+        `Choose the profile whose description and explicit tool policy fit the task: ${profilesDescription}. If a task needs both research and implementation, make separate delegated calls rather than broadening a profile's access.`,
         "For investigations spanning multiple files or external sources, delegate to subagent instead of reproducing the work in the parent with read, bash, or codemode. Delegate implementation work to worker when the child should make changes.",
         "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
       ],
-      parameters: ResearchInputSchema,
+      parameters: profileRegistry.inputSchema,
       outputSchema: ResearchResultSchema,
       annotations: { openWorldHint: true },
       prepareArguments(args) {
-        return parseResearchInput(args);
+        return parseResearchInput(args, profileRegistry);
       },
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const input = parseResearchInput(params);
+        const input = parseResearchInput(params, profileRegistry);
         try {
           const selectedTools = loadProfileToolsForExtension(input.agent);
           const taskError = profileTaskError(input, selectedTools);
@@ -194,13 +206,13 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
             const parentKetchError = validateParentKetchTransport(pi, ctx.cwd, agentDir, ctx.isProjectTrusted());
             if (parentKetchError) return setupFailure(input, new Error(parentKetchError));
           }
-          return await executeResearch(getRunner(agentDir), runnerConfig!, agentDir, input, ctx, signal, onUpdate);
+          return await executeResearch(getRunner(agentDir), runnerConfig!, agentDir, input, ctx, signal, onUpdate, profileRegistry);
         } catch (error) {
           return setupFailure(input, error);
         }
       },
       renderCall(args, theme, context) {
-        return renderResearchCall(args, theme, context);
+        return renderResearchCall(args as ResearchInput, theme, context);
       },
       renderResult(result, options, theme, context) {
         return renderResearchResult(result as ResearchToolResult, options, theme, context);
@@ -210,7 +222,7 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     // This hook runs before the tool executes and rejects malformed programmatic/model calls even
     // if a future SDK argument normalizer would otherwise coerce them into the schema.
     pi.on("tool_call", (event) => {
-      if (event.toolName === SUBAGENT_TOOL) parseResearchInput(event.input);
+      if (event.toolName === SUBAGENT_TOOL) parseResearchInput(event.input, profileRegistry);
     });
 
     pi.on("session_shutdown", async () => {

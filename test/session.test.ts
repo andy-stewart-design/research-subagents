@@ -95,14 +95,14 @@ test("configured profiles expand and narrow every allowlist without leaking tool
   };
   for (const agent of ["scout", "researcher", "worker"] as const) {
     const opts = await options(t), h = harness();
-    h.services.loadProfile = (name) => profiles[name];
+    h.services.loadProfile = (name) => profiles[name]!;
     const result = await runResearchSession({ agent, task: "configured policy" }, opts, h.services);
     assert.equal(result.status, "completed", result.handoff.text);
-    assert.deepEqual(h.launches[0]!.tools, profiles[agent].tools);
-    assert.deepEqual(h.launches[0]!.settingsManager!.getSettings().defaultTools, profiles[agent].tools);
+    assert.deepEqual(h.launches[0]!.tools, profiles[agent]!.tools);
+    assert.deepEqual(h.launches[0]!.settingsManager!.getSettings().defaultTools, profiles[agent]!.tools);
     assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
-    assert.deepEqual(h.session.getActiveToolNames(), profiles[agent].tools);
-    assert.deepEqual(h.session.getCallableToolNames(), profiles[agent].tools);
+    assert.deepEqual(h.session.getActiveToolNames(), profiles[agent]!.tools);
+    assert.deepEqual(h.session.getCallableToolNames(), profiles[agent]!.tools);
     assert.doesNotMatch(JSON.stringify(h.launches[0]!.customTools ?? []), /mcp__ketch__|write|edit|bash/);
   }
 });

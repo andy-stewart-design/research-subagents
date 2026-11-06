@@ -1,10 +1,12 @@
 # Pi research-subagents
 
-A local Pi extension package for three isolated child profiles:
+A local Pi extension package for isolated child profiles. The bundled profiles are:
 
 - **Scout** — read-only local code investigation using Pi's `read`, `grep`, `find`, and `ls` policy.
 - **Researcher** — read-only external investigation using Ketch's `search`, `scrape`, `code`, and `docs` tools.
 - **Worker** — repository implementation using Pi's `read`, `write`, `edit`, and `bash` tools.
+
+Agent types are discovered from the bundled `agents/*.md` files. Add a safe lowercase filename (letters/digits separated by `-` or `_`) to register a profile without changing TypeScript; `README.md`, dotfiles, and non-markdown files are ignored. Existing bundled profiles retain their historical omitted-tools defaults; a new profile must declare `tools` explicitly (omitting it gives the new profile no tools). Discovery is deterministic and is refreshed when the extension is reloaded.
 
 The package contains two independently loadable extensions:
 
@@ -121,7 +123,7 @@ or:
 }
 ```
 
-The input has exactly two fields: `agent` (`scout`, `researcher`, or `worker`) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious mismatches with the selected profile capabilities: local paths require a selected local-capable tool, external URLs require `bash` or Ketch, and the bundled Scout/Researcher defaults retain their local-only/external-only checks. A Researcher child that produces no Ketch lookup is not accepted as a sourced report. Worker tasks are allowed to modify the current repository.
+The input has exactly two fields: `agent` (one of the discovered profile filenames) and a non-whitespace `task`. Task text remains literal; it is not treated as a command, file reference, prompt template, or parent transcript. The public boundary fails closed for obvious mismatches with the selected profile capabilities: local paths require a selected local-capable tool, external URLs require `bash` or Ketch, and the bundled Scout/Researcher defaults retain their local-only/external-only checks. A Researcher child that produces no Ketch lookup is not accepted as a sourced report. Worker tasks are allowed to modify the current repository.
 
 For researcher dispatches, an effective global or trusted project Ketch file entry wins over extension registrations, matching native Pi precedence. If that winning backend changes the command, arguments, environment, working directory, URL, or transport from plain `ketch mcp serve`, research fails with an actionable diagnostic. Scout is not blocked by Ketch configuration conflicts. If no parent Ketch entry exists, the researcher still proceeds with its independent child-owned configuration.
 
@@ -156,7 +158,24 @@ Example:
 
 Defaults are concurrency **2** and **no research deadline**. A configured `timeoutMs` starts only after queued work receives a slot. Cancellation or timeout interrupts the child, waits for owned cleanup, and returns a truthful bounded error; the first interruption cause wins. This is separate from native MCP request/startup timeouts.
 
-Agent files carry the profile source of truth in markdown frontmatter. `model` and `thinking` set bundled defaults; `tools` is an optional exact allowlist. Omitting `tools` preserves the current profile defaults, while `tools: []` intentionally exposes no tools. Use either an inline YAML array or a comma-separated scalar, for example `tools: [read, grep, bash]` or `tools: read, grep, bash`. Supported names are the native `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus `mcp__ketch__search`, `mcp__ketch__scrape`, `mcp__ketch__code`, and `mcp__ketch__docs`; unknown names, duplicates, malformed lists, and unsupported values fail before the child task starts. Ketch is loaded only when at least one Ketch tool is selected, and only the selected Ketch subset is exposed. `grep` and `find` use safe wrappers and require already-installed `rg`/`fd` only when selected.
+Agent files carry the profile source of truth in markdown frontmatter. `model` and `thinking` set defaults; `description` documents the public enum; `tools` is an optional exact allowlist. Existing bundled profiles retain their historical omitted-tools defaults, while a new profile without `tools` receives no tools. `tools: []` also intentionally exposes no tools. Use either an inline YAML array or a comma-separated scalar, for example `tools: [read, grep, bash]` or `tools: read, grep, bash`. Supported names are the native `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus `mcp__ketch__search`, `mcp__ketch__scrape`, `mcp__ketch__code`, and `mcp__ketch__docs`; unknown names, duplicates, malformed lists, and unsupported values fail before the child task starts.
+
+For example, create `agents/reviewer.md`:
+
+```markdown
+---
+model: anthropic/claude-sonnet-4-5
+thinking: high
+tools: [read, grep, find]
+description: Review local changes and report risks without editing files.
+---
+
+# Reviewer
+
+Inspect the requested changes, cite exact files and lines, and report risks and gaps.
+```
+
+Reload Pi after adding or removing an agent (`/reload` or a new session). The reload is the discovery snapshot boundary; a running extension keeps its existing registry. Ketch is loaded only when at least one Ketch tool is selected, and only the selected Ketch subset is exposed. `grep` and `find` use safe wrappers and require already-installed `rg`/`fd` only when selected.
 
 The bundled Scout, Researcher, and Worker default to `openai-codex/gpt-5.6-luna` with `high` thinking; an explicit `research-subagents.json` profile override wins, followed by parent provider/model and thinking inheritance. Overrides must use `provider/model` and a supported thinking level. Unavailable or unauthenticated models fail without fallback.
 
