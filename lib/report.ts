@@ -18,6 +18,8 @@ export interface ReportOptions {
   readonly workspaceDir: string;
   /** A retained-report base, never a child's disposable session directory. Defaults to OS temp. */
   readonly scratchDir?: string;
+  /** Persist even a short handoff (used for timeout recovery before child disposal). */
+  readonly forcePersist?: boolean;
 }
 
 // Narrow injection seam for deterministic filesystem failures, not a model-facing option.
@@ -77,7 +79,7 @@ export async function createReportHandoff(
   files: ReportFileSystem = fileSystem,
 ): Promise<ReportHandoff> {
   if (!report.trim()) return createDiagnosticHandoff("Research produced no final report.");
-  if (Buffer.byteLength(report, "utf8") <= MAX_HANDOFF_BYTES) {
+  if (Buffer.byteLength(report, "utf8") <= MAX_HANDOFF_BYTES && !options.forcePersist) {
     return { text: report, truncated: false, isError: false };
   }
 
@@ -99,17 +101,20 @@ export async function createReportHandoff(
     ownedDirectory = await files.mkdtemp(join(scratch, "pi-research-report-"));
     await files.chmod(ownedDirectory, 0o700);
     const reportPath = join(ownedDirectory, "report.md");
-    const notice = `\n\n[Report truncated: this is a clipped excerpt, not a summary.]\nFull report: ${reportPath}`;
+    const oversized = Buffer.byteLength(report, "utf8") > MAX_HANDOFF_BYTES;
+    const notice = oversized
+      ? `\n\n[Report truncated: this is a clipped excerpt, not a summary.]\nFull report: ${reportPath}`
+      : "";
     const noticeBytes = Buffer.byteLength(notice, "utf8");
-    if (noticeBytes >= MAX_HANDOFF_BYTES) {
+    if (oversized && noticeBytes >= MAX_HANDOFF_BYTES) {
       throw new Error("The full-report path and notice exceed the handoff budget.");
     }
 
     await files.writeFile(reportPath, report, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await files.chmod(reportPath, 0o600);
     return {
-      text: utf8Prefix(report, MAX_HANDOFF_BYTES - noticeBytes) + notice,
-      truncated: true,
+      text: oversized ? utf8Prefix(report, MAX_HANDOFF_BYTES - noticeBytes) + notice : report,
+      truncated: oversized,
       isError: false,
       reportPath,
     };

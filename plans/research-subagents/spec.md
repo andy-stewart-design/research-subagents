@@ -2,16 +2,16 @@
 
 ## Status
 
-- Readiness: Ready for planning.
+- Readiness: Implemented baseline.
 - Blocking decisions: None. Inferred v1 defaults are identified separately from explicit agreement below.
-- Delivery: Specification only; the new extension and its integration have not been implemented or verified.
+- Delivery: Scout, Researcher, and Worker are implemented in the current extension; automated checks cover the baseline behavior.
 - Source: The research-subagents discussion and grill-me interview in this session; the two local reference implementations; installed Pi documentation; the Ketch skill and MCP tool definitions inspected during the discussion.
 
 ## Problem and intended outcome
 
 Research often requires reading many files or web pages, while only a small fraction of that material is useful to the ongoing coding conversation. Performing the entire investigation in the parent session consumes its context window and carries irrelevant intermediate material into subsequent work.
 
-Provide focused, research-only delegation: a child investigates in a fresh context and returns a compact, evidence-backed report. The parent retains responsibility for decisions and code changes. The same Ketch capabilities must also be programmatically callable by the parent for simple lookups that do not warrant a separate reasoning context.
+Provide focused delegation: a child investigates or implements in a fresh context and returns a compact report. The parent retains responsibility for decisions and may explicitly delegate code changes to Worker. The same Ketch capabilities must also be programmatically callable by the parent for simple lookups that do not warrant a separate reasoning context.
 
 Success means that a parent can obtain useful local-code or web research without receiving the child's tool transcript, granting the child implementation tools, or adopting a general-purpose agent orchestration framework.
 
@@ -19,7 +19,7 @@ Success means that a parent can obtain useful local-code or web research without
 
 Included:
 
-- One delegation tool with two bundled profiles: `scout` for local code and `researcher` for external research.
+- One delegation tool with three bundled profiles: `scout` for local code, `researcher` for external research, and `worker` for repository implementation.
 - Fresh, one-shot child contexts, compact cited reports, basic progress, cancellation, and an optional safety timeout.
 - Ketch MCP integration for web search, scraping, public OSS code search, and library documentation, usable independently of delegation.
 - Explicit child tool/resource selection, model defaults and profile overrides, and a small shared concurrency limit.
@@ -27,11 +27,11 @@ Included:
 
 Non-goals:
 
-- Workers, file-editing agents, recursive delegation, chains, batch-array APIs, or background jobs.
+- Recursive delegation, chains, batch-array APIs, or background jobs.
 - Resumable child conversations, inherited parent transcripts, automatic parent-context extraction, or persistent research memory.
 - Project-defined agents, dynamic third-party agent registration, or general agent discovery.
 - OS sandboxing, filesystem-root enforcement, private-network blocking, or credential isolation.
-- Hard per-run token, spend, turn, or tool-call budgets; graceful budget-exhaustion summarization.
+- Hard per-run token, spend, turn, or tool-call budgets (wall-clock timeout recovery is specified below).
 - Reimplementing Ketch's backends, MCP transport, tool schemas, cache, or configuration UI.
 - Crawl and bookmark workflows, sophisticated nested-agent rendering, or a usage dashboard.
 
@@ -59,11 +59,11 @@ Preserve fresh contexts, completion-driven runs, and parent cancellation. Delibe
 
 - **R1 — Focused interface:** Expose a single-task delegation tool accepting exactly one bundled profile and a nonempty task. Unknown profiles or invalid input must fail before launching a child. There is no recursive, chain, or batch mode.
 - **R2 — Context isolation:** Every invocation starts a fresh child conversation. Only the explicit task, the selected profile's instructions, and required runtime/tool metadata enter that conversation; parent messages and previous child history must not be copied automatically. Ordinary project/user skills, prompt templates, context files, and unrelated extensions must not be discovered into children.
-- **R3 — Tool restriction:** Scout receives only local read/search/list tools. Researcher receives only the four selected Ketch tools. Neither profile can invoke shell, edits, writes, delegation, or unrelated MCP tools. This is a tool boundary, not a sandbox.
+- **R3 — Tool restriction:** Scout receives only local read/search/list tools. Researcher receives only the four selected Ketch tools. Worker receives only read/write/edit/bash. No profile receives unrelated MCP tools or delegation. This is a tool boundary, not a sandbox.
 - **R4 — Shared research capabilities:** The parent can call the selected Ketch tools programmatically without spawning a research child. Researcher uses those same Ketch capabilities and configured backends rather than a second web-tool implementation. Missing required capabilities must produce an actionable failure, not a tool-less research run.
 - **R5 — Explicit model selection:** Model/thinking selection follows the documented inheritance and profile-override rules. An unavailable selected model or credentials must fail clearly rather than silently switch provider/model or modify credentials.
 - **R6 — Bounded handoff:** The model-facing delegation result contains a compact report or bounded diagnostic, never the child's raw transcript, reasoning trace, or accumulated tool results. Report policy requests evidence and uncertainty. A hard byte cap and explicit overflow behavior apply to every profile and terminal outcome.
-- **R7 — Completion-driven lifecycle:** A child normally runs to completion without an imposed research-call, turn, token, or spend budget. An optional configurable wall-clock timeout is a failsafe. Interrupted work must not be presented as a completed report, and no graceful partial synthesis is promised.
+- **R7 — Completion-driven lifecycle:** A child normally runs to completion without an imposed research-call, turn, token, or spend budget. An optional configurable wall-clock timeout is a failsafe. Interrupted work must not be presented as a completed report; a timeout may receive one bounded same-session incomplete handoff after settlement, while cancellation never synthesizes.
 - **R8 — Concurrency and cancellation:** Concurrent delegation calls share a bounded child-runner capacity. Cancellation applies while queued and while running, releases capacity, and cleans up owned processes/resources. Cancelling one invocation must not cancel unrelated children or parent-owned MCP connections.
 - **R9 — Truthful results and recovery:** Success requires authoritative successful child completion and nonempty final report text. Process failure, terminal assistant error/abort, missing tools, empty output, and interruption are distinguishable from success. A substantive "no relevant findings" report is allowed. A new invocation is an independent retry, not a continuation of stale child state.
 - **R10 — Minimal observability:** Users can distinguish queued, running, and terminal states, identify the profile/task, and see basic activity while a child runs. The tool remains functional without an interactive UI, and progress does not become a full transcript handoff.
@@ -74,11 +74,11 @@ Preserve fresh contexts, completion-driven runs, and parent cancellation. Delibe
 
 ### Delegation interface
 
-The v1 baseline tool name is `research` (an inferred naming default):
+The v1 baseline tool name is `subagent`:
 
 ```ts
-research({
-  agent: "scout" | "researcher",
+subagent({
+  agent: "scout" | "researcher" | "worker",
   task: string
 })
 ```
@@ -95,6 +95,7 @@ One call starts at most one child. Multiple independent calls may run concurrent
 | --- | --- | --- |
 | Scout child | Pi `read`, `grep`, `find`, `ls` | Shell, write/edit, all MCP tools, delegation |
 | Researcher child | Ketch MCP `search`, `scrape`, `code`, `docs`, declared directly | Local file tools, shell, write/edit, delegation, crawl, tag tool, other MCP servers |
+| Worker child | Pi `read`, `write`, `edit`, `bash` | Unrelated MCP tools, delegation, ordinary extensions, skills, templates, and context files |
 | Parent | Selected Ketch tools callable through Pi codemode; delegation tool available to the model | No withdrawal or replacement of unrelated parent capabilities |
 
 Pi's expected Ketch names are `mcp__ketch__search`, `mcp__ketch__scrape`, `mcp__ketch__code`, and `mcp__ketch__docs` when the server is named `ketch`. The implementation plan must account for Pi's actual server precedence and tool-exposure behavior; a plain non-MCP tool allowlist is not sufficient proof that other MCP tools are inaccessible.
@@ -105,7 +106,7 @@ Ketch retains ownership of backend defaults, authentication, browser behavior, a
 
 The policy requests bounded lookups: default to five search/code/docs results where applicable, approximately 6,000 characters per scraped page, and the configured/default docs token allowance. Prefer search followed by selective scraping; browser rendering is an escalation, not a promise to bypass authentication or anti-bot controls. These are instruction-level defaults, not a new enforcing wrapper around Ketch. Programmatic parent callers may request other supported values and reduce results before exposing them to the model.
 
-The scout is told to locate relevant symbols and relationships, read useful sections, and cite exact file/line references. The researcher is told to vary search angles when needed, prefer authoritative sources, check applicability/version, and cite URLs. Neither is instructed to implement changes. These instructions constrain intended behavior but do not establish immunity to prompt injection.
+The scout is told to locate relevant symbols and relationships, read useful sections, and cite exact file/line references. The researcher is told to vary search angles when needed, prefer authoritative sources, check applicability/version, and cite URLs. The worker is told to inspect before editing, make targeted changes, run verification, and report the result. These instructions constrain intended behavior but do not establish immunity to prompt injection.
 
 ### Models and configuration defaults
 
@@ -116,10 +117,10 @@ The following are inferred v1 baseline defaults, not separately user-approved va
 | Model | Parent's active provider/model captured at dispatch; optional user-configured per-profile override |
 | Thinking | Parent's level unless overridden per profile; clamp to the selected model's supported levels |
 | Maximum concurrent children | Two per parent extension runtime, shared across delegation calls |
-| Safety timeout | Disabled unless configured; a configured value is positive and applies from child startup, not queue entry |
+| Safety timeout | Disabled unless configured; `0` is unlimited, positive integer milliseconds start after a queue slot, and agent/call ceilings may shorten it |
 | Report target | Usually 400–800 words; shorter answers are preferable when sufficient |
 | Hard model-facing result cap | 12 KiB UTF-8, including headings, overflow notice, path, or diagnostic |
-| Profile discovery | Two bundled profiles only |
+| Profile discovery | Three bundled profiles only |
 | Delegation guidance | Parent may delegate multi-step investigations autonomously; use direct tools for simple lookups |
 
 Invalid configuration fails clearly rather than silently disabling limits or tools. Selection of a credential source must use supported Pi/Ketch behavior; parent process-only provider registration or ephemeral credentials are not assumed to be available to a subprocess.
@@ -167,7 +168,7 @@ A terminal assistant error/abort can occur even when the process exits zero. Pro
 
 Ketch errors retain their useful distinctions: validation errors require different input, missing configuration requires operator action, and upstream failures may be transient. Recoverable tool errors may be investigated by the child. A terminal run failure remains a failed delegation. Batch scrape per-URL errors and search backend partial failures must not be silently treated as evidence that every source succeeded.
 
-If interruption leaves an already finalized text fragment that is shown, label it incomplete; no partial result is required. The parent can request another fresh investigation. Neither timeout nor ordinary invocation automatically edits configuration, installs dependencies, changes authentication, or retries the entire delegation indefinitely.
+If interruption leaves an already finalized text fragment that is shown, label it incomplete. A deadline gets one bounded, tool-free same-session handoff only after the original operation settles; cancellation skips that handoff. The parent can request another fresh investigation. Neither timeout nor ordinary invocation automatically edits configuration, installs dependencies, changes authentication, or retries the entire delegation indefinitely.
 
 ### Parent user flow
 
@@ -213,11 +214,11 @@ All verification below is proposed. No implementation acceptance tests or live r
 
 ## Assumptions
 
-The user explicitly accepted a tool-restricted rather than sandboxed boundary, and completion-driven research with cancellation and an optional safety timeout. The broader accepted direction is two research profiles plus native Ketch MCP capabilities, without workers or recursive orchestration.
+The user explicitly accepted a tool-restricted rather than sandboxed boundary, and completion-driven research with cancellation and an optional safety timeout. The broader accepted direction is three fixed profiles plus native Ketch MCP capabilities, without recursive orchestration.
 
 The following are inferred implementation baselines, not decisions individually approved in the interview:
 
-- `research` is the tool name; two concurrent children, inherited models with profile overrides, a disabled-by-default safety timeout, 400–800-word guidance, and a 12 KiB result cap keep v1 simple. Confirm these as configurable/default behavior in planning; no additional interview is required unless implementation uncovers a consequential conflict.
+- `subagent` is the tool name; two concurrent children, inherited models with profile overrides, a disabled-by-default safety timeout, 400–800-word guidance, and a 12 KiB result cap keep v1 simple. Confirm these as configurable/default behavior in planning; no additional interview is required unless implementation uncovers a consequential conflict.
 - Parent delegation may be autonomous for multi-step investigations. This is guidance, not forced routing or a guarantee of when a model delegates; assess it using representative tasks.
 - The parent uses codemode for Ketch while children receive direct Ketch declarations. The four core tools are sufficient initially. Validate actual availability and structured result behavior with Ketch v0.18.1 during implementation verification, not from discovery alone.
 - Bundled profiles and suppressed automatic context-file loading are preferable to project customization for predictable context/tool isolation. The parent must put relevant project-specific constraints into the task.

@@ -48,6 +48,12 @@ test("Scout prerequisites report operator setup, not an automatic download", () 
   assert.doesNotThrow(() => requireScoutBinary("fd", () => true));
 });
 
+test("Scout wrappers are conditional on selected grep/find tools", () => {
+  assert.deepEqual(createScoutTools(tmpdir(), () => true, ["grep"]).map((tool) => tool.name), ["grep"]);
+  assert.deepEqual(createScoutTools(tmpdir(), () => true, ["find"]).map((tool) => tool.name), ["find"]);
+  assert.deepEqual(createScoutTools(tmpdir(), () => true, []).map((tool) => tool.name), []);
+});
+
 test("Scout wrappers preserve native schemas/descriptions/renderers but gate backend entry", () => {
   const cwd = tmpdir();
   const guarded = createScoutTools(cwd, () => false);

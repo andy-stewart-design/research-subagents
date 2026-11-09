@@ -10,18 +10,19 @@ import {
   PROFILES,
   ResearchInputSchema,
   getProfile,
-  loadProfileDefaults, loadProfilePrompt,
+  loadProfileDefaults, loadProfilePrompt, parseProfilePrompt,
   parseResearchInput,
   type ProfileName,
 } from "../lib/profiles.ts";
 
-test("exactly two bundled profiles have the fixed read-only tool policy", () => {
-  assert.deepEqual(PROFILE_NAMES, ["scout", "researcher"]);
+test("the bundled profiles have fixed tool policies", () => {
+  assert.deepEqual(PROFILE_NAMES, ["scout", "researcher", "worker"]);
   assert.deepEqual(Object.keys(PROFILES), [...PROFILE_NAMES]);
   assert.deepEqual(getProfile("scout").tools, ["read", "grep", "find", "ls"]);
   assert.deepEqual(getProfile("researcher").tools, [
     "mcp__ketch__search", "mcp__ketch__scrape", "mcp__ketch__code", "mcp__ketch__docs",
   ]);
+  assert.deepEqual(getProfile("worker").tools, ["read", "write", "edit", "bash"]);
   assert.ok(Object.isFrozen(PROFILE_NAMES) && Object.isFrozen(PROFILES));
 });
 
@@ -41,10 +42,10 @@ test("the strict schema is compatible with the target SDK without importing its 
   }
 });
 
-test("bad input, extra fields, workers, and orchestration parameters are rejected", () => {
+test("bad input, extra fields, unknown agents, and orchestration parameters are rejected", () => {
   const invalid = [
     undefined, null, [], "task", {}, { agent: "scout" }, { task: "question" },
-    { agent: "worker", task: "change code" }, { agent: "Scout", task: "question" },
+    { agent: "planner", task: "make a plan" }, { agent: "Scout", task: "question" },
     { agent: "toString", task: "question" }, { agent: "../../outside", task: "question" },
     { agent: "scout", task: "" }, { agent: "scout", task: " \n\t\r" },
     { agent: "scout", task: 5 }, { agent: "scout", task: null },
@@ -71,15 +72,43 @@ test("large tasks are accepted without a command-line-sized cap", () => {
 });
 
 test("unknown runtime names cannot select a profile or escape bundled prompt paths", () => {
-  for (const name of ["worker", "toString", "__proto__", "../../outside"] as unknown as ProfileName[]) {
+  for (const name of ["planner", "toString", "__proto__", "../../outside"] as unknown as ProfileName[]) {
     assert.throws(() => getProfile(name), /Unknown research profile/);
     assert.throws(() => loadProfilePrompt(name), /Unknown research profile/);
   }
 });
 
+test("profile tools frontmatter supports defaults, inline arrays, comma lists, and explicit empty lists", () => {
+  assert.deepEqual(parseProfilePrompt("scout", "---\nmodel: fixture/model\n---\nbody").tools, getProfile("scout").tools);
+  assert.deepEqual(parseProfilePrompt("scout", "---\ntools: [read, bash, mcp__ketch__search]\n---\nbody").tools,
+    ["read", "bash", "mcp__ketch__search"]);
+  assert.deepEqual(parseProfilePrompt("worker", "---\ntools: read, write, edit\n---\nbody").tools,
+    ["read", "write", "edit"]);
+  assert.deepEqual(parseProfilePrompt("worker", "---\ntools: []\n---\nbody").tools, []);
+  for (const [source, expected] of [
+    [`---\ntools: ["read", 'bash', "grep"] # trailing comment\n---\nbody`, ["read", "bash", "grep"]],
+    [`---\ntools: "read, bash" # scalar comment\n---\nbody`, ["read", "bash"]],
+    [`---\ntools: ['mcp__ketch__search', "mcp__ketch__docs"]\n---\nbody`, ["mcp__ketch__search", "mcp__ketch__docs"]],
+    [`---\ntools: [read, bash] # '#' inside a comment\n---\nbody`, ["read", "bash"]],
+  ] as const) assert.deepEqual(parseProfilePrompt("worker", source).tools, expected);
+  for (const source of [
+    `---\ntools: [read, mystery]\n---\nbody`,
+    `---\ntools: [read, read]\n---\nbody`,
+    `---\ntools: [read\n---\nbody`,
+    `---\ntools: ["read, bash"]\n---\nbody`,
+    `---\ntools: ["read", "bash]\n---\nbody`,
+    `---\ntools: [read,]\n---\nbody`,
+    `---\ntools:\n---\nbody`,
+    `---\ntools: ""\n---\nbody`,
+    `---\ntools: [read] trailing\n---\nbody`,
+  ]) assert.throws(() => parseProfilePrompt("worker", source), /Invalid worker prompt tools|unsupported tool name/);
+  assert.throws(() => parseProfilePrompt("worker", "---\ntools: read\nmodel: fixture/model\ntools: bash\n---\nbody"), /duplicate tools/);
+});
+
 test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {
   assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
   assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
+  assert.deepEqual(loadProfileDefaults("worker"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
   assert.doesNotMatch(loadProfilePrompt("researcher"), /gpt-5\.6-luna/);
 });
 
@@ -101,8 +130,8 @@ test("prompts load from bundled resources, not cwd or local agent files", () => 
   }
 });
 
-test("both prompts request compact cited findings and explicit uncertainty, not implementation", () => {
-  for (const name of PROFILE_NAMES) {
+test("research prompts request compact cited findings and explicit uncertainty", () => {
+  for (const name of ["scout", "researcher"] as const) {
     const prompt = loadProfilePrompt(name);
     for (const heading of ["Answer", "Evidence", "Caveats", "Next lookup"]) {
       assert.ok(prompt.includes("## " + heading));
@@ -116,6 +145,15 @@ test("both prompts request compact cited findings and explicit uncertainty, not 
     assert.match(prompt, /Do not (include|return).*tool transcript/);
     assert.doesNotMatch(prompt, /model:\s|anthropic\/claude|openai-codex\//);
   }
+});
+
+test("worker prompt permits targeted implementation and verification", () => {
+  const prompt = loadProfilePrompt("worker");
+  for (const tool of getProfile("worker").tools) assert.ok(prompt.includes(`\`${tool}\``));
+  assert.match(prompt, /Make the smallest targeted changes/);
+  assert.match(prompt, /Run the most relevant tests/);
+  assert.match(prompt, /not an operating-system sandbox/);
+  assert.match(prompt, /Do not delegate/);
 });
 
 test("scout guidance requests inspected file/line evidence and static/runtime distinctions", () => {

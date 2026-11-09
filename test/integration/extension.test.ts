@@ -60,7 +60,7 @@ test("public research completes through the native extension tool pipeline witho
       runSession: async () => reportOutcome(),
     }),
   });
-  const settingsManager = SettingsManager.inMemory({ defaultTools: ["read", "research"] });
+  const settingsManager = SettingsManager.inMemory({ defaultTools: ["read", "subagent"] });
   const resourceLoader = new DefaultResourceLoader({
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -78,12 +78,12 @@ test("public research completes through the native extension tool pipeline witho
   const history = SessionManager.inMemory(cwd);
   ({ session } = await createAgentSession({
     cwd, agentDir, model, modelRuntime, resourceLoader, settingsManager, sessionManager: history,
-    tools: ["read", "research"], thinkingLevel: "off",
+    tools: ["read", "subagent"], thinkingLevel: "off",
   }));
   await session.bindExtensions({ onError: (error) => errors.push(error) });
   history.appendMessage({
     role: "assistant", api: model.api, provider: model.provider, model: model.id,
-    content: [{ type: "toolCall", id: "fixture-research", name: "research", arguments: { agent: "scout", task: "Find the fixture fact." } }],
+    content: [{ type: "toolCall", id: "fixture-subagent", name: "subagent", arguments: { agent: "scout", task: "Find the fixture fact." } }],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     stopReason: "toolUse", timestamp: Date.now(),
   });
@@ -91,7 +91,7 @@ test("public research completes through the native extension tool pipeline witho
   const assistant = session.agent.state.messages.findLast((message) => message.role === "assistant");
   assert.ok(assistant && assistant.role === "assistant");
   const call = await runToolCall({
-    type: "toolCall", id: "fixture-research", name: "research",
+    type: "toolCall", id: "fixture-subagent", name: "subagent",
     arguments: { agent: "scout", task: "Find the fixture fact." },
   }, {
     tools: session.agent.state.tools,
@@ -101,7 +101,7 @@ test("public research completes through the native extension tool pipeline witho
   assert.equal(call.isError, false);
   assert.match(JSON.stringify(call.result.structuredContent), /Public pipeline report/);
   assert.doesNotMatch(JSON.stringify(call.result), /reasoning|PRIVATE_TRANSCRIPT/);
-  assert.ok(session.getActiveToolNames().includes("research"));
+  assert.ok(session.getActiveToolNames().includes("subagent"));
   assert.ok(session.getActiveToolNames().includes("read"));
 
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

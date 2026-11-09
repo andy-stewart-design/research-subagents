@@ -8,7 +8,7 @@ import type { Context, Model } from "@earendil-works/pi-ai";
 import { StdioTransport } from "@earendil-works/pi-mcp";
 import { createAgentSession, DefaultPackageManager, SettingsManager, type AgentSession, type CreateAgentSessionOptions } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../../lib/config.ts";
-import { getProfile, loadProfilePrompt, type ProfileName } from "../../lib/profiles.ts";
+import { getProfile, loadProfile, loadProfilePrompt, renderProfileSystemPrompt, type ProfileName, type ProfilePrompt } from "../../lib/profiles.ts";
 import { createChildModelRuntime, runResearchSession, type ResearchSessionOptions, type SessionServices } from "../../lib/session.ts";
 import { hasScoutBinary } from "../../lib/scout.ts";
 import { assistant, completedStream } from "../fixtures/session-fixtures.ts";
@@ -71,14 +71,23 @@ async function fixture(t: TestContext) {
     config: parseConfig({ profiles: {
       scout: { model: `${provider}/${modelId}`, thinking: "max" },
       researcher: { model: `${provider}/${modelId}`, thinking: "max" },
+      worker: { model: `${provider}/${modelId}`, thinking: "max" },
     } }),
   };
   return { root, cwd, agentDir, installerLog, extensionLog, parent, options };
 }
 
 interface ScriptRequest { readonly index: number; readonly context: Context; readonly model: Model<any>; readonly session: AgentSession }
-function nativeServices(agent: ProfileName, root: string, script: (request: ScriptRequest) => ReturnType<typeof assistant>, nativeOptions: { mcpTools?: string; expectedThinking?: CreateAgentSessionOptions["thinkingLevel"] } = {}) {
-  const { mcpTools } = nativeOptions;
+function nativeServices(agent: ProfileName, root: string, script: (request: ScriptRequest) => ReturnType<typeof assistant>, nativeOptions: {
+  mcpTools?: string;
+  expectedThinking?: CreateAgentSessionOptions["thinkingLevel"];
+  expectedTools?: readonly string[];
+  expectedPrompt?: string;
+  expectedExtensions?: number;
+} = {}) {
+  const { mcpTools, expectedExtensions = agent === "researcher" ? 1 : 0 } = nativeOptions;
+  const expectedTools = nativeOptions.expectedTools ?? getProfile(agent).tools;
+  const expectedPrompt = nativeOptions.expectedPrompt ?? renderProfileSystemPrompt({ text: loadProfilePrompt(agent), defaults: {}, tools: expectedTools });
   const sessions: AgentSession[] = [], launches: CreateAgentSessionOptions[] = [];
   const connections: string[] = [];
   const pids = new Set<number>();
@@ -94,8 +103,8 @@ function nativeServices(agent: ProfileName, root: string, script: (request: Scri
       runtime.streamSimple = (model, context) => {
         requests++;
         const session = currentSession!;
-        assert.deepEqual(session.getActiveToolNames().sort(), [...getProfile(agent).tools].sort());
-        assert.deepEqual(session.getCallableToolNames().sort(), [...getProfile(agent).tools].sort());
+        assert.deepEqual(session.getActiveToolNames().sort(), [...expectedTools].sort());
+        assert.deepEqual(session.getCallableToolNames().sort(), [...expectedTools].sort());
         assert.doesNotMatch(JSON.stringify(context), /DISCOVERED_\w+_SENTINEL|PARENT_HISTORY_SENTINEL/);
         return completedStream(script({ index: requests - 1, context, model, session }));
       };
@@ -125,8 +134,8 @@ function nativeServices(agent: ProfileName, root: string, script: (request: Scri
       assert.deepEqual(loader.getSkills().skills, []); assert.deepEqual(loader.getPrompts().prompts, []);
       assert.deepEqual(loader.getAgentsFiles().agentsFiles, []); assert.deepEqual(loader.getThemes().themes, []);
       assert.deepEqual(loader.getAppendSystemPrompt(), []);
-      assert.equal(loader.getSystemPrompt(), loadProfilePrompt(agent));
-      assert.equal(loader.getExtensions().extensions.length, agent === "researcher" ? 1 : 0);
+      assert.equal(loader.getSystemPrompt(), expectedPrompt);
+      assert.equal(loader.getExtensions().extensions.length, expectedExtensions);
       const result = await createAgentSession(input);
       const session = result.session;
       sessions.push(session);
@@ -155,7 +164,7 @@ test("native scout suppresses user/project/package resources, keeps task literal
     if (index === 0) {
       const users = context.messages.filter((message) => message.role === "user");
       assert.equal(users.length, 1);
-      assert.deepEqual(users[0]!.content, [{ type: "text", text: `Research task (literal data):\n\n${task}` }]);
+      assert.deepEqual(users[0]!.content, [{ type: "text", text: `Subagent task (literal data):\n\n${task}` }]);
       return assistant([{ type: "thinking", thinking: "PRIVATE_REASONING" }, { type: "text", text: "PRIVATE_INTERIM" }, { type: "toolCall", id: "local-read", name: "read", arguments: { path: "facts.txt" } }], "toolUse", 1, model);
     }
     const result = context.messages.findLast((message) => message.role === "toolResult");
@@ -216,7 +225,7 @@ test("native researcher waits for Ketch, never connects unrelated servers or exp
   const native = nativeServices("researcher", f.root, ({ index, context, model }) => {
     assert.equal(native.connections.length, 1);
     if (index === 0) {
-      assert.match(JSON.stringify(context.messages), /Research task \(literal data\)/);
+      assert.match(JSON.stringify(context.messages), /Subagent task \(literal data\)/);
       return assistant([{ type: "toolCall", id: "web-search", name: "mcp__ketch__search", arguments: { query: "fixture evidence", limit: 5 } }], "toolUse", 1, model);
     }
     const result = context.messages.findLast((message) => message.role === "toolResult");
@@ -234,12 +243,56 @@ test("native researcher waits for Ketch, never connects unrelated servers or exp
   await assertUnchanged(f, initial);
 });
 
+test("native researcher Ketch subsets connect and expose only the selected MCP tools", { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t), initial = await before(f);
+  const bundled = loadProfile("researcher");
+  const profile: ProfilePrompt = { ...bundled, tools: ["mcp__ketch__search", "mcp__ketch__docs"] };
+  const native = nativeServices("researcher", f.root, ({ index, context, model }) => {
+    if (index === 0) {
+      return assistant([{ type: "toolCall", id: "subset-search", name: "mcp__ketch__search", arguments: { query: "subset" } }], "toolUse", 1, model);
+    }
+    const result = context.messages.findLast((message) => message.role === "toolResult");
+    assert.ok(result && result.role === "toolResult" && !result.isError);
+    return assistant("Subset lookup completed.", "stop", 1, model);
+  }, {
+    mcpTools: "search,docs", expectedTools: profile.tools, expectedPrompt: renderProfileSystemPrompt(profile), expectedExtensions: 1,
+  });
+  native.services.loadProfile = () => profile;
+  const result = await runResearchSession({ agent: "researcher", task: "Use only the selected Ketch subset." }, f.options, native.services);
+  assert.equal(result.status, "completed", result.handoff.text);
+  assert.deepEqual(native.connections, ["ketch"]);
+  const calls = await fs.readFile(join(f.root, "mcp-calls.jsonl"), "utf8");
+  assert.match(calls, /search/); assert.doesNotMatch(calls, /scrape|code|docs/);
+  await assertUnchanged(f, initial);
+});
+
+test("native worker can edit the repository but remains isolated from unrelated resources", { timeout: 10_000 }, async (t) => {
+  const f = await fixture(t), initial = await before(f);
+  const native = nativeServices("worker", f.root, ({ index, context, model }) => {
+    if (index === 0) {
+      assert.match(JSON.stringify(context.messages), /Subagent task \(literal data\)/);
+      return assistant([{ type: "toolCall", id: "write-worker", name: "write", arguments: { path: "worker-output.txt", content: "worker changed this file\\n" } }], "toolUse", 1, model);
+    }
+    const result = context.messages.findLast((message) => message.role === "toolResult");
+    assert.ok(result && result.role === "toolResult" && !result.isError, JSON.stringify(result));
+    return assistant("## Completed\\nWrote the requested file.\\n## Verification\\nThe write tool succeeded.", "stop", 1, model);
+  });
+  const result = await runResearchSession({ agent: "worker", task: "Create worker-output.txt with the requested content." }, f.options, native.services);
+  assert.equal(result.status, "completed", result.handoff.text);
+  assert.equal(result.activity.toolCalls, 1);
+  assert.equal(await fs.readFile(join(f.cwd, "worker-output.txt"), "utf8"), "worker changed this file\\n");
+  assert.deepEqual(await snapshot(f.agentDir), initial.agent);
+  assert.equal(JSON.stringify(f.parent), initial.parent);
+  await assert.rejects(fs.access(f.installerLog), { code: "ENOENT" });
+  await assert.rejects(fs.access(f.extensionLog), { code: "ENOENT" });
+});
+
 test("native tool policy blocks mutating/delegating attempts and keeps repo unchanged", { timeout: 10_000 }, async (t) => {
   const f = await fixture(t), initial = await before(f);
   const native = nativeServices("scout", f.root, ({ index, context, model }) => {
     if (index === 0) return assistant([
       { type: "toolCall", id: "write", name: "write", arguments: { path: "facts.txt", content: "changed" } },
-      { type: "toolCall", id: "delegate", name: "research", arguments: { agent: "scout", task: "recurse" } },
+      { type: "toolCall", id: "delegate", name: "subagent", arguments: { agent: "scout", task: "recurse" } },
     ], "toolUse", 1, model);
     const results = context.messages.filter((message) => message.role === "toolResult");
     assert.equal(results.length, 2);
@@ -260,7 +313,7 @@ test("independent native invocations never inherit previous answers, and large t
     assert.doesNotMatch(JSON.stringify(context), /PREVIOUS_CHILD_SENTINEL/);
     const user = context.messages.find((message) => message.role === "user");
     assert.ok(user && user.role === "user");
-    assert.deepEqual(user.content, [{ type: "text", text: `Research task (literal data):\n\n${task}` }]);
+    assert.deepEqual(user.content, [{ type: "text", text: `Subagent task (literal data):\n\n${task}` }]);
     return assistant("Independent no-findings report.", "stop", 1, model);
   });
   const result = await runResearchSession({ agent: "scout", task }, f.options, second.services);

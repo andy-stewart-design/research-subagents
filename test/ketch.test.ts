@@ -42,14 +42,14 @@ test("Ketch and research factories load independently and compose without duplic
   assert.deepEqual(ketchOnly.tools, []);
   const researchOnly = load(createResearchExtension());
   assert.deepEqual(researchOnly.servers, []);
-  assert.deepEqual(researchOnly.tools, ["research"]);
+  assert.deepEqual(researchOnly.tools, ["subagent"]);
   for (const order of [
     (api: ExtensionAPI) => { extension(api); createResearchExtension()(api); },
     (api: ExtensionAPI) => { createResearchExtension()(api); extension(api); },
   ]) {
     const both = load(order);
     assert.deepEqual(both.servers.map((server) => server.name), ["ketch"]);
-    assert.deepEqual(both.tools, ["research"]);
+    assert.deepEqual(both.tools, ["subagent"]);
     assert.equal(both.handlers.get("session_start"), 1);
     assert.equal(both.handlers.get("session_shutdown"), 2);
   }
@@ -81,6 +81,14 @@ test("project Ketch transport replaces global configuration while metadata overr
   }, root, agentDir, true), undefined);
   assert.equal(validateParentKetchTransport(view, root, agentDir, true), undefined);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("Ketch configuration exposes only the selected subset", () => {
+  assert.deepEqual(createKetchServerConfig("direct", ["mcp__ketch__search", "mcp__ketch__docs"]).toolExposure,
+    { search: "direct", docs: "direct" });
+  assert.throws(() => createKetchServerConfig("direct", ["mcp__ketch__search", "mcp__ketch__tag"]), /unknown/);
+  assert.deepEqual(loadResearcherMcpConfig(["mcp__ketch__code"]).servers[0]!.config.toolExposure,
+    { code: "direct" });
 });
 
 test("shared Ketch configuration fixes the CLI and exposes only four core tools", () => {

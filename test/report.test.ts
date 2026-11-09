@@ -90,6 +90,16 @@ test("reports at and just below the 12 KiB byte limit are unchanged", async () =
   }
 });
 
+test("timeout handoffs can force persistence without changing the short report bytes", async (t) => {
+  const options = await fixture(t);
+  const text = "Short timeout handoff.";
+  const result = await createReportHandoff(text, { ...options, forcePersist: true });
+  assert.deepEqual(result.text, text);
+  assert.equal(result.truncated, false);
+  assert.ok(result.reportPath);
+  assert.equal(await fs.readFile(result.reportPath, "utf8"), text);
+});
+
 test("a one-byte overflow is retained even when character count is below the byte cap", async (t) => {
   const options = await fixture(t);
   for (const text of ["a".repeat(MAX_HANDOFF_BYTES + 1), "🙂".repeat(MAX_HANDOFF_BYTES / 4) + "a"]) {

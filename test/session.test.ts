@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { getEventListeners } from "node:events";
 import test, { type TestContext } from "node:test";
 import { Type } from "typebox";
 import type { AgentSessionEvent, CreateAgentSessionOptions, ExtensionError, SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../lib/config.ts";
+import type { ProfileName, ProfilePrompt } from "../lib/profiles.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
-import { runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
-import { assistant, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
+import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
+import { assistant, completedStream, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
 
 async function options(t: TestContext): Promise<ResearchSessionOptions> {
   const root = await fs.mkdtemp(join(tmpdir(), "research-session-unit-"));
@@ -35,13 +38,15 @@ function harness(run: (script: Script) => Promise<void> | void = ({ append }) =>
     hasScoutBinary: () => true,
     async createSession(input) {
       launches.push(input);
-      const tools = [...input.tools!];
+      let tools = [...input.tools!];
       const history = input.sessionManager!;
       const emit = (event: AgentSessionEvent) => { for (const listener of listeners) listener(event); };
       instance = {
         model: input.model!,
         getAllTools: () => tools.map((name) => ({ name, description: "fixture", parameters: Type.Object({}), exposure: "direct", sourceInfo: { path: "<fixture>", source: "fixture", scope: "temporary", origin: "top-level" } })),
         getActiveToolNames: () => [...tools], getCallableToolNames: () => [...tools],
+        setActiveToolsByName(names) { tools = [...names]; },
+        setActiveTools(names) { tools = [...names]; },
         subscribe(listener) { calls.push("subscribe"); listeners.add(listener); return () => { calls.push("unsubscribe"); listeners.delete(listener); }; },
         async bindExtensions(bindings) { calls.push("bind"); reportError = bindings.onError; },
         async prompt(request, promptOptions) {
@@ -66,7 +71,7 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   const opts = await options(t);
   const h = harness();
   h.services.createModelRuntime = async () => { throw new Error("must not create runtime"); };
-  for (const input of [{ agent: "worker", task: "x" }, { agent: "scout", task: " " }, { agent: "scout", task: "x", cwd: "/" }]) {
+  for (const input of [{ agent: "planner", task: "x" }, { agent: "scout", task: " " }, { agent: "scout", task: "x", cwd: "/" }]) {
     const result = await runResearchSession(input, opts, h.services);
     assert.equal(result.status, "failed"); assert.match(result.handoff.text, /Invalid research input/);
   }
@@ -75,6 +80,92 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   const controller = new AbortController(); controller.abort();
   assert.equal((await runResearchSession({ agent: "scout", task: "x" }, { ...opts, signal: controller.signal }, h.services)).status, "cancelled");
   assert.equal(h.launches.length, 0);
+});
+
+test("pre-aborted cancellation is ready synchronously and all abort listeners are removed", async (t) => {
+  const opts = await options(t);
+  const signal = new AbortController();
+  const cancellation = signal;
+  const deadline = new AbortController();
+  cancellation.abort();
+  const h = harness();
+  h.services.createModelRuntime = () => new Promise(() => {});
+  const result = await Promise.race([
+    runResearchSession({ agent: "scout", task: "already cancelled" }, {
+      ...opts, signal: signal.signal, cancellationSignal: cancellation.signal, deadlineSignal: deadline.signal, cleanupTimeoutMs: 10,
+    }, h.services),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("cancellation startup hung")), 100)),
+  ]);
+  assert.equal(result.status, "cancelled");
+  assert.equal(h.launches.length, 0);
+  assert.equal(getEventListeners(signal.signal, "abort").length, 0);
+  assert.equal(getEventListeners(cancellation.signal, "abort").length, 0);
+  assert.equal(getEventListeners(deadline.signal, "abort").length, 0);
+});
+
+test("worker sessions receive only implementation tools and no research extension", async (t) => {
+  const opts = await options(t), h = harness();
+  const result = await runResearchSession({ agent: "worker", task: "implement the change" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(h.launches[0]!.tools, ["read", "write", "edit", "bash"]);
+  assert.deepEqual(h.launches[0]!.customTools, undefined);
+  assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+});
+
+test("configured profiles expand and narrow every allowlist without leaking tools or extensions", async (t) => {
+  const profiles: Record<ProfileName, ProfilePrompt> = {
+    scout: { text: "scout prompt", defaults: {}, tools: ["read", "bash"] },
+    researcher: { text: "researcher prompt", defaults: {}, tools: ["read"] },
+    worker: { text: "worker prompt", defaults: {}, tools: [] },
+  };
+  for (const agent of ["scout", "researcher", "worker"] as const) {
+    const opts = await options(t), h = harness();
+    h.services.loadProfile = (name) => profiles[name]!;
+    const result = await runResearchSession({ agent, task: "configured policy" }, opts, h.services);
+    assert.equal(result.status, "completed", result.handoff.text);
+    assert.deepEqual(h.launches[0]!.tools, profiles[agent]!.tools);
+    assert.deepEqual(h.launches[0]!.settingsManager!.getSettings().defaultTools, profiles[agent]!.tools);
+    assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+    assert.deepEqual(h.session.getActiveToolNames(), profiles[agent]!.tools);
+    assert.deepEqual(h.session.getCallableToolNames(), profiles[agent]!.tools);
+    assert.doesNotMatch(JSON.stringify(h.launches[0]!.customTools ?? []), /mcp__ketch__|write|edit|bash/);
+  }
+});
+
+test("Ketch subsets expose only selected direct capabilities and native-only researchers skip Ketch barriers", async (t) => {
+  const opts = await options(t), h = harness();
+  const profile: ProfilePrompt = {
+    text: "researcher subset prompt", defaults: {}, tools: ["mcp__ketch__search", "mcp__ketch__docs"],
+  };
+  h.services.loadProfile = () => profile;
+  const subset = await runResearchSession({ agent: "researcher", task: "use the selected Ketch tools" }, opts, h.services);
+  assert.equal(subset.status, "failed");
+  assert.match(subset.handoff.text, /without using an external Ketch lookup/);
+  assert.deepEqual(h.launches[0]!.tools, profile.tools);
+  assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions.length, 1);
+  assert.deepEqual(h.session.getActiveToolNames(), profile.tools);
+
+  const native = harness();
+  native.services.loadProfile = () => ({ text: "native-only researcher", defaults: {}, tools: ["read"] });
+  const nativeResult = await runResearchSession({ agent: "researcher", task: "inspect local evidence" }, opts, native.services);
+  assert.equal(nativeResult.status, "completed");
+  assert.deepEqual(native.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+});
+
+test("only selected grep/find prerequisites and wrappers are requested", async (t) => {
+  for (const [tools, expectedBinary, expectedCustom] of [
+    [["read", "grep"], "rg", ["grep"]],
+    [["read", "find"], "fd", ["find"]],
+  ] as const) {
+    const opts = await options(t), h = harness(), checked: string[] = [];
+    h.services.loadProfile = () => ({ text: "search profile", defaults: {}, tools });
+    h.services.hasScoutBinary = (binary) => { checked.push(binary); return true; };
+    const result = await runResearchSession({ agent: "scout", task: "search locally" }, opts, h.services);
+    assert.equal(result.status, "completed");
+    assert.deepEqual(checked, [expectedBinary]);
+    assert.deepEqual(h.launches[0]!.customTools?.map((tool) => tool.name), expectedCustom);
+    assert.deepEqual(h.launches[0]!.tools, tools);
+  }
 });
 
 test("missing Scout prerequisites fail before model/session creation rather than letting native tools download binaries", async (t) => {
@@ -91,7 +182,7 @@ test("fresh history/settings per invocation and large option/command/file-like t
   const tasks = ["/mcp login secret\n@file.md $(touch nope) --cwd /private\n  ", "文🙂".repeat(40_000)];
   const h = harness(({ history, request, append }) => {
     assert.equal(history.buildSessionContext().messages.length, 1);
-    assert.equal(request, `Research task (literal data):\n\n${tasks[h.launches.length - 1]}`);
+    assert.equal(request, `Subagent task (literal data):\n\n${tasks[h.launches.length - 1]}`);
     append(assistant(h.launches.length === 1 ? "FIRST_CHILD_SENTINEL" : "Independent final report"));
   });
   const capturedParent = { ...parent, messages: ["PARENT_SENTINEL"], activeTools: ["write"] };
@@ -134,10 +225,84 @@ test("only final authoritative text blocks enter handoff; activity has no transc
   assert.equal(result.handoff.text, "## Answer\nFinal\n## Evidence\nfile.ts:1");
   assert.equal(result.status, "completed");
   assert.deepEqual(result.usage, usage(10));
-  assert.deepEqual(result.activity, { assistantMessages: 2, toolCalls: 1, latestTool: "read" });
+  assert.equal(result.activity.assistantMessages, 2);
+  assert.equal(result.activity.toolCalls, 1);
+  assert.equal(result.activity.latestTool, "read");
+  assert.equal(result.activity.toolHistory?.length, 1);
+  assert.equal(result.activity.toolHistory?.[0]?.summary, undefined);
   assert.equal(updates.length, 3);
   assert.doesNotMatch(JSON.stringify([updates, result]), /SECRET|INTERIM/);
   assert.deepEqual(h.calls, ["subscribe", "bind", "prompt", "abort", "shutdown", "unsubscribe", "dispose"]);
+});
+
+test("tool activity grows with fixed run-relative timestamps, safe summaries, immutable snapshots, and a capped tail", async (t) => {
+  const opts = await options(t);
+  let clock = 10_000;
+  const updates: import("../lib/session.ts").SessionActivity[] = [];
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "one", toolName: "bash", args: { command: "pnpm\n test \u001b[31m" } });
+    clock = 266_000;
+    emit({ type: "tool_execution_start", toolCallId: "two", toolName: "UNTRUSTED_SECRET".repeat(100), args: { command: "DO_NOT_ECHO" } });
+    for (let index = 3; index <= 52; index++) {
+      clock += 1_000;
+      emit({ type: "tool_execution_start", toolCallId: String(index), toolName: "bash", args: { command: `echo ${index}` } });
+    }
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "worker", task: "question" }, {
+    ...opts, startedAt: 10_000, now: () => clock, onActivity: (activity) => updates.push(activity),
+  }, h.services);
+  assert.equal(result.status, "completed");
+  assert.equal(result.activity.toolCalls, 52);
+  assert.equal(result.activity.omittedToolCalls, 2);
+  assert.equal(result.activity.toolHistory?.length, 50);
+  assert.equal(result.activity.toolHistory?.[0]?.index, 3);
+  assert.equal(result.activity.toolHistory?.[0]?.tool, "bash");
+  assert.equal(result.activity.toolHistory?.[0]?.summary, "echo 3");
+  assert.equal(result.activity.toolHistory?.[0]?.elapsedMs, 257_000);
+  assert.equal(updates[0]?.toolHistory?.[0]?.summary, "pnpm test");
+  assert.equal(updates[0]?.toolHistory?.[0]?.elapsedMs, 0);
+  assert.equal(result.activity.toolHistory?.[1]?.tool, "bash");
+  assert.doesNotMatch(JSON.stringify(result), /UNTRUSTED_SECRET|DO_NOT_ECHO|private/);
+  const growing = updates.find((activity) => activity.toolHistory?.length === 1);
+  assert.ok(growing);
+  assert.equal(growing.toolHistory?.length, 1);
+  assert.equal(updates.at(-1)?.toolHistory?.length, 50);
+});
+
+test("tool summaries use the actual Pi/Ketch argument fields and cap batched URLs", async (t) => {
+  const opts = await options(t);
+  const urls = Array.from({ length: 40 }, (_, index) => `https://example.test/article-${index}-${"x".repeat(12)}`);
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "search", toolName: "mcp__ketch__search", args: { query: "Ketch MCP schemas" } });
+    emit({ type: "tool_execution_start", toolCallId: "scrape", toolName: "mcp__ketch__scrape", args: { urls } });
+    emit({ type: "tool_execution_start", toolCallId: "code", toolName: "mcp__ketch__code", args: { query: "MCP tool schema" } });
+    emit({ type: "tool_execution_start", toolCallId: "docs", toolName: "mcp__ketch__docs", args: { query: "MCP SDK" } });
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "researcher", task: "question" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  const history = result.activity.toolHistory!;
+  assert.equal(history[0]?.summary, "Ketch MCP schemas");
+  assert.equal(history[2]?.summary, "MCP tool schema");
+  assert.equal(history[3]?.summary, "MCP SDK");
+  assert.ok(history[1]?.summary?.startsWith(urls[0]!));
+  assert.ok(!history[1]?.summary?.includes(urls.at(-1)!));
+  assert.ok(Array.from(history[1]?.summary ?? "").length <= MAX_TOOL_SUMMARY);
+});
+
+test("Scout summaries use native pattern/path fields rather than tool output", async (t) => {
+  const opts = await options(t);
+  const h = harness(({ emit, append }) => {
+    emit({ type: "tool_execution_start", toolCallId: "read", toolName: "read", args: { path: "src/index.ts" } });
+    emit({ type: "tool_execution_start", toolCallId: "grep", toolName: "grep", args: { pattern: "createApp", path: "src" } });
+    emit({ type: "tool_execution_start", toolCallId: "find", toolName: "find", args: { pattern: "**/*.test.ts", path: "test" } });
+    emit({ type: "tool_execution_start", toolCallId: "ls", toolName: "ls", args: { path: "src" } });
+    append(assistant("Final report"));
+  });
+  const result = await runResearchSession({ agent: "scout", task: "question" }, opts, h.services);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.activity.toolHistory?.map((call) => call.summary), ["src/index.ts", "createApp", "**/*.test.ts", "src"]);
 });
 
 test("malformed optional provider usage is omitted rather than invented or leaking an uncaught failure", async (t) => {
@@ -168,6 +333,87 @@ test("overall prompt settlement, not an early agent end or recoverable error, de
   release();
   const result = await pending;
   assert.equal(result.handoff.text, "Recovered final report"); assert.equal(result.status, "completed");
+});
+
+test("deadline interruption settles, disables tools, and makes one same-session bounded handoff", async (t) => {
+  const opts = await options(t);
+  const deadline = new AbortController();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const h = harness(async ({ request, append }) => {
+    if (request.startsWith("Subagent task")) {
+      await blocked;
+      append(assistant("Partial work", "aborted"));
+    } else {
+      append(assistant("Completed work and files changed: none.\\nUnfinished/current work: unknown.\\nVerification: unverified; the operation may still be running.\\nBlockers/next steps: inspect the child state."));
+    }
+  });
+  const create = h.services.createSession;
+  h.services.createSession = async (input) => {
+    const created = await create(input);
+    created.session.abort = async () => { h.calls.push("abort"); release(); };
+    return created;
+  };
+  const pending = runResearchSession({ agent: "scout", task: "deadline task" }, {
+    ...opts, deadlineSignal: deadline.signal, timeoutGraceMs: 100,
+  }, h.services);
+  while (!h.calls.includes("prompt")) await tick();
+  deadline.abort();
+  const result = await pending;
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.handoff.isError, true);
+  assert.match(result.handoff.text, /Completed work and files changed/);
+  assert.equal(h.calls.filter((call) => call === "prompt").length, 2);
+  assert.deepEqual(h.session.getActiveToolNames(), []);
+  assert.deepEqual(h.session.getCallableToolNames(), []);
+});
+
+test("timeout summary uses a real runtime maxTokens cap and is persisted before disposal", async (t) => {
+  const opts = await options(t);
+  const scratchDir = join(dirname(opts.workspaceDir), "retained-reports");
+  await fs.mkdir(scratchDir);
+  const deadline = new AbortController();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let summaryMaxTokens: number | undefined;
+  let persistedBeforeDispose = false;
+  const h = harness(async ({ request, append }) => {
+    if (request.startsWith("Subagent task")) await blocked;
+    else append(assistant("Completed work and files changed: none. Unfinished/current work: inspect the partial files."));
+  });
+  const create = h.services.createSession;
+  h.services.createSession = async (input) => {
+    const created = await create(input);
+    const runtime = input.modelRuntime!;
+    runtime.streamSimple = ((_model, _context, requestOptions) => {
+      summaryMaxTokens = requestOptions?.maxTokens;
+      return completedStream(assistant("runtime summary"));
+    }) as typeof runtime.streamSimple;
+    const prompt = created.session.prompt.bind(created.session);
+    created.session.prompt = async (request, promptOptions) => {
+      if (!request.startsWith("Subagent task")) {
+        await runtime.streamSimple(input.model!, { messages: [] } as never, {});
+      }
+      return prompt(request, promptOptions);
+    };
+    created.session.abort = async () => { release(); };
+    const dispose = created.session.dispose.bind(created.session);
+    created.session.dispose = () => {
+      persistedBeforeDispose = readdirSync(scratchDir).some((entry) => existsSync(join(scratchDir, entry, "report.md")));
+      dispose();
+    };
+    return created;
+  };
+  const pending = runResearchSession({ agent: "scout", task: "deadline task" }, {
+    ...opts, deadlineSignal: deadline.signal, timeoutGraceMs: 100, scratchDir,
+  }, h.services);
+  while (!h.calls.includes("prompt")) await tick();
+  deadline.abort();
+  const result = await pending;
+  assert.equal(result.status, "timed_out");
+  assert.equal(summaryMaxTokens, 1024);
+  assert.equal(persistedBeforeDispose, true);
+  assert.ok(result.handoff.reportPath);
 });
 
 test("terminal failures cannot fall back to earlier narration, even when prompt resolves normally", async (t) => {
@@ -311,6 +557,31 @@ test("cancellation during session creation still shuts down the late-created own
   controller.abort(); release();
   assert.equal((await pending).status, "cancelled");
   assert.deepEqual(h.calls, ["abort", "shutdown", "dispose"]);
+});
+
+test("deadline and explicit cancellation bound hung runtime/session startup without fabricating a report", async (t) => {
+  const opts = await options(t);
+  for (const phase of ["runtime", "session"] as const) {
+    const controller = new AbortController();
+    const h = harness();
+    if (phase === "runtime") h.services.createModelRuntime = () => new Promise(() => {});
+    else h.services.createSession = async () => new Promise(() => {});
+    const pending = runResearchSession({ agent: "scout", task: `hung ${phase}` }, {
+      ...opts, deadlineSignal: controller.signal, timeoutGraceMs: 15, cleanupTimeoutMs: 10,
+    }, h.services);
+    controller.abort();
+    const timedOut = await pending;
+    assert.equal(timedOut.status, "timed_out");
+    assert.match(timedOut.handoff.text, /timed out/);
+  }
+  const controller = new AbortController();
+  const h = harness();
+  h.services.createModelRuntime = () => new Promise(() => {});
+  const pending = runResearchSession({ agent: "scout", task: "cancelled startup" }, {
+    ...opts, signal: controller.signal, cleanupTimeoutMs: 10,
+  }, h.services);
+  controller.abort();
+  assert.equal((await pending).status, "cancelled");
 });
 
 test("activity callback failures cannot break native persistence/cleanup and unknown tool names are bounded metadata", async (t) => {

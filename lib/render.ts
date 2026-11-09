@@ -15,6 +15,7 @@ export interface ResearchToolDetails {
   readonly task: string;
   readonly activity?: SessionActivity;
   readonly elapsedMs?: number;
+  readonly timeoutMs?: number;
   readonly model?: string;
   readonly thinkingLevel?: string;
   readonly truncated?: boolean;
@@ -23,12 +24,31 @@ export interface ResearchToolDetails {
 
 const MAX_TASK_PREVIEW = 240;
 const MAX_CALL_PREVIEW_WIDTH = 96;
+interface SubagentRenderContext {
+  readonly expanded: boolean;
+}
 
 function formatElapsed(elapsedMs: number): string {
   const seconds = elapsedMs / 1_000;
-  return seconds < 10
-    ? `${seconds.toFixed(1).replace(/\.0$/u, "")}s`
-    : `${Math.round(seconds)}s`;
+  if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/u, "")}s`;
+  const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds < 60) return `${roundedSeconds}s`;
+  const minutes = Math.floor(roundedSeconds / 60);
+  return `${minutes}m ${roundedSeconds % 60}s`;
+}
+
+function formatToolCallNoun(count: number): string {
+  return `tool call${count === 1 ? "" : "s"}`;
+}
+
+function renderToolHistory(activity: SessionActivity, theme: Theme): string {
+  const history = activity.toolHistory ?? [];
+  const omitted = activity.omittedToolCalls ?? Math.max(0, activity.toolCalls - history.length);
+  const lines = history.map((call) =>
+    `${call.index}. ${call.tool}${call.summary ? ` · ${call.summary}` : ""} · ${formatElapsed(call.elapsedMs)}`,
+  );
+  if (omitted > 0) lines.unshift(`… ${omitted} earlier ${formatToolCallNoun(omitted)} omitted`);
+  return lines.length ? `\n\n${theme.fg("dim", lines.join("\n"))}` : "";
 }
 
 export function previewTask(task: string): string {
@@ -42,7 +62,7 @@ export function previewTask(task: string): string {
 export function detailsFromStatus(status: ResearchRunStatus): ResearchToolDetails {
   return {
     status: status.state,
-    agent: status.agent ?? "scout",
+    agent: status.agent ?? "unknown" as ResearchInput["agent"],
     task: previewTask(status.task ?? ""),
     ...(status.activity ? { activity: status.activity } : {}),
     ...(status.elapsedMs !== undefined ? { elapsedMs: status.elapsedMs } : {}),
@@ -56,17 +76,23 @@ export function formatResearchProgress(status: ResearchRunStatus): string {
   const thinking = status.thinkingLevel ? `; ${status.thinkingLevel}` : "";
   const activity = status.activity?.latestTool
     ? `; latest tool ${status.activity.latestTool}`
-    : status.activity ? `; ${status.activity.toolCalls} tool call(s)` : "";
+    : status.activity ? `; ${status.activity.toolCalls} ${formatToolCallNoun(status.activity.toolCalls)}` : "";
   const elapsed = status.elapsedMs !== undefined ? `; ${formatElapsed(status.elapsedMs)}` : "";
-  return `Research ${status.state}: ${status.agent ?? "research"}${model}${thinking}${activity}${elapsed}`;
+  return `Subagent ${status.state}: ${status.agent ?? "unknown"}${model}${thinking}${activity}${elapsed}`;
 }
 
-export function renderResearchCall(args: ResearchInput, theme: Theme): Component {
+export function renderResearchCall(args: ResearchInput, theme: Theme, context?: SubagentRenderContext): Component {
+  const expanded = context?.expanded ?? false;
   // Truncation inserts full ANSI resets, which would clear the surrounding tool box's background.
   // The preview is plain text; strip those resets before applying theme colors.
-  const task = stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
+  const task = expanded
+    ? stripTerminalSequences(args.task).replace(/[\u0000\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    : stripTerminalSequences(truncateToWidth(previewTask(args.task), MAX_CALL_PREVIEW_WIDTH));
+  const separator = expanded ? "\n\n" : " — ";
+  // Pi renders call and result components as adjacent children; one trailing newline here
+  // produces the single empty line between the expanded prompt and result metadata.
   return new Text(
-    `${theme.fg("toolTitle", theme.bold("research "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", ` — ${task}`) : ""}`,
+    `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent)}${task ? theme.fg("muted", `${separator}${task}`) : ""}${expanded ? "\n" : ""}`,
     0,
     0,
   );
@@ -83,41 +109,44 @@ export function renderResearchResult(
   result: AgentToolResult<ResearchToolDetails>,
   options: ToolRenderResultOptions,
   theme: Theme,
+  _context?: SubagentRenderContext,
 ): Component {
   const details = result.details;
   if (options.isPartial) {
-    if (!details) return new Text(theme.fg("warning", "Research running…"), 0, 0);
-    let progress = `Research ${details.status}`;
+    if (!details) return new Text(theme.fg("warning", "Subagent running…"), 0, 0);
+    let progress = `Subagent ${details.status}`;
     if (details.model) progress += ` · ${details.model}`;
     if (details.thinkingLevel) progress += ` · ${details.thinkingLevel}`;
     if (details.activity) {
-      progress += ` · ${details.activity.toolCalls} tool call(s)`;
+      progress += ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`;
       if (details.activity.latestTool) progress += ` · ${details.activity.latestTool}`;
     }
     if (details.elapsedMs !== undefined) progress += ` · ${formatElapsed(details.elapsedMs)}`;
+    if (options.expanded && details.activity) progress += renderToolHistory(details.activity, theme);
     return new Text(theme.fg("warning", progress), 0, 0);
   }
   if (!details) {
     const diagnostic = createDiagnosticHandoff(resultText(result)).text;
     const visible = options.expanded ? diagnostic : diagnostic.split("\n")[0] ?? diagnostic;
-    return new Text(theme.fg("error", visible || "Research result unavailable."), 0, 0);
+    return new Text(theme.fg("error", visible || "Subagent result unavailable."), 0, 0);
   }
 
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";
-  let text = theme.fg(statusColor, `Research ${details.status}`);
+  let text = theme.fg(statusColor, `Subagent ${details.status}`);
   if (details.model) text += theme.fg("dim", ` · ${details.model}`);
   if (details.thinkingLevel) text += theme.fg("dim", ` · ${details.thinkingLevel}`);
   if (details.activity) {
-    text += theme.fg("dim", ` · ${details.activity.toolCalls} tool call(s)`);
+    text += theme.fg("dim", ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`);
     if (details.activity.latestTool) text += theme.fg("dim", ` · ${details.activity.latestTool}`);
   }
   if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${formatElapsed(details.elapsedMs)}`);
   if (details.truncated) text += theme.fg("warning", " · report clipped");
-  if (details.reportPath && options.expanded) text += `\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
+  if (options.expanded && details.activity) text += renderToolHistory(details.activity, theme);
+  if (details.reportPath && options.expanded) text += `\n\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;
   if (options.expanded) {
     const report = resultText(result);
-    if (report) text += `\n${report}`;
+    if (report) text += `\n\n${report}`;
   }
   return new Text(text, 0, 0);
 }
