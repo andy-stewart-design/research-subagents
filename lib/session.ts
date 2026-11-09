@@ -44,7 +44,18 @@ export interface ResearchSessionOptions {
   readonly parent: DispatchDefaults;
   /** Discovery snapshot shared by schema, config, model selection, and this child. */
   readonly profileRegistry?: ProfileRegistry;
+  /** Parent/user cancellation. Timeout is delivered separately and tagged on the compatibility signal. */
   readonly signal?: AbortSignal;
+  /** Parent cancellation kept separate from the runner's tagged timeout wake-up. */
+  readonly cancellationSignal?: AbortSignal;
+  /** Soft deadline signal; queueing never consumes it. */
+  readonly deadlineSignal?: AbortSignal;
+  /** Effective per-run deadline after global/agent/call policy resolution; zero/undefined is unlimited. */
+  readonly timeoutMs?: number;
+  /** Production value is 30 seconds; tests inject a small deterministic grace. */
+  readonly timeoutGraceMs?: number;
+  /** Bound native abort/shutdown cleanup; production defaults to two seconds. */
+  readonly cleanupTimeoutMs?: number;
   readonly scratchDir?: string;
   /** Runner-provided clock/start let activity timestamps share the run's elapsed-time origin. */
   readonly now?: () => number;
@@ -53,6 +64,8 @@ export interface ResearchSessionOptions {
 }
 export interface SessionOutcome {
   readonly status: "completed" | "failed" | "cancelled" | "timed_out";
+  /** Effective deadline metadata is retained on timeout outcomes. */
+  readonly timeoutMs?: number;
   readonly handoff: ReportHandoff;
   readonly activity: SessionActivity;
   readonly usage?: Usage;
@@ -63,6 +76,9 @@ export interface ChildSession extends Pick<AgentSession,
   "prompt" | "subscribe" | "bindExtensions" | "getAllTools" | "getActiveToolNames" |
   "getCallableToolNames" | "abort" | "dispose" | "model"
 > {
+  /** Pi 1.1 uses this to change the next model request's declared tools. */
+  readonly setActiveToolsByName?: (toolNames: string[]) => void;
+  readonly setActiveTools?: (toolNames: string[]) => void;
   readonly extensionRunner: { emit(event: SessionShutdownEvent): Promise<void> };
 }
 export interface SessionServices {
@@ -152,6 +168,23 @@ export async function createChildModelRuntime(agentDir: string, selection: Model
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown child-session error.";
+}
+
+/** Internal marker used to wake compatibility runners without treating a deadline as cancellation. */
+export interface ResearchTimeoutAbortReason { readonly researchTimeout: true; readonly message?: string }
+export function isResearchTimeoutAbortReason(reason: unknown): reason is ResearchTimeoutAbortReason {
+  return !!reason && typeof reason === "object" && (reason as { researchTimeout?: unknown }).researchTimeout === true;
+}
+
+function finalAssistant(history: SessionManager): { text?: string; valid: boolean; aborted?: boolean } {
+  const entry = history.getBranch().findLast((candidate) => candidate.type === "message" && candidate.message.role !== "system");
+  const message = entry?.type === "message" ? entry.message : undefined;
+  if (!message || message.role !== "assistant") return { valid: false };
+  if (message.stopReason !== "stop" || message.content.some((part) => part.type === "toolCall")) {
+    return { valid: false, aborted: message.stopReason === "aborted" };
+  }
+  const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+  return { valid: !!text.trim(), text };
 }
 
 /** Keep the activity side channel useful without making it a transcript or an unbounded store. */
@@ -247,13 +280,17 @@ export async function runResearchSession(
   input: unknown, options: ResearchSessionOptions, overrides: Partial<SessionServices> = {},
 ): Promise<SessionOutcome> {
   const services: SessionServices = { createModelRuntime: createChildModelRuntime, createSession: createAgentSession, hasScoutBinary, ...overrides };
-  const { signal, cwd, agentDir, workspaceDir, scratchDir, onActivity } = options;
+  const { signal, cancellationSignal, deadlineSignal, cwd, agentDir, workspaceDir, scratchDir, onActivity } = options;
   const now = options.now ?? Date.now;
   const startedAt = options.startedAt ?? now();
   let session: ChildSession | undefined;
+  let sessionCreation: Promise<{ session: ChildSession; modelFallbackMessage?: string }> | undefined;
   let history: SessionManager | undefined;
   let unsubscribe: (() => void) | undefined;
   let closePromise: Promise<void> | undefined;
+  let noSessionClosePromise: Promise<void> | undefined;
+  let resolveNoSessionClose: (() => void) | undefined;
+  let noSessionCloseTimer: ReturnType<typeof setTimeout> | undefined;
   let lifecycleError: string | undefined;
   const cleanupErrors: string[] = [];
   let closing = false;
@@ -262,31 +299,214 @@ export async function runResearchSession(
   let failure: string | undefined;
   let report: string | undefined;
   let interrupted = false;
+  let timedOut = false;
+  let timeoutHandoff: ReportHandoff | undefined;
+  let primaryOperation: Promise<void> | undefined;
+  let startupOperation: Promise<void> | undefined;
+  let runtimeForHandoff: ModelRuntime | undefined;
+  let timeoutWorkflow: Promise<void> | undefined;
+  let resolveTimeoutDone: (() => void) | undefined;
+  const timeoutDone = new Promise<void>((resolve) => { resolveTimeoutDone = resolve; });
+  let resolveCancellation: (() => void) | undefined;
+  const cancellation = new Promise<void>((resolve) => { resolveCancellation = resolve; });
+  let abortPromise: Promise<void> | undefined;
+  let timeoutStarted = false;
+  let closeRequested = false;
+  const graceMs = options.timeoutGraceMs ?? 30_000;
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 2_000;
+  const lateStartupWaitMs = Math.min(cleanupTimeoutMs, 100);
   const onError = (error: ExtensionError) => {
     const message = `${error.event ?? "extension"}: ${error.error}`;
     if (closing) cleanupErrors.push(message);
     else lifecycleError ??= message;
   };
-  const close = (): Promise<void> => {
-    // Cancellation may arrive before createSession resolves. Do not memoize a no-session close.
+  const requestAbort = (): Promise<void> => {
     if (!session) return Promise.resolve();
-    return closePromise ??= (async () => {
+    return abortPromise ??= Promise.resolve().then(() => session!.abort());
+  };
+  const close = (): Promise<void> => {
+    // Cancellation/timeout can arrive before createSession resolves. Mark ownership immediately;
+    // the late-created session is closed by the assignment below rather than leaked.
+    const waitingForLateResource = closeRequested;
+    closeRequested = true;
+    if (!session) {
+      if (!waitingForLateResource) return Promise.resolve();
+      noSessionClosePromise ??= new Promise<void>((resolve) => {
+        resolveNoSessionClose = resolve;
+        noSessionCloseTimer = setTimeout(resolve, lateStartupWaitMs);
+      });
+      return noSessionClosePromise;
+    }
+    const ownedClose = closePromise ??= (async () => {
       closing = true;
       const owned = session!;
       // Start abort/idle concurrently with shutdown: closing MCP can unblock outstanding tools.
-      const results = await Promise.allSettled([
-        Promise.resolve().then(() => owned.abort()),
+      const cleanup = Promise.allSettled([
+        requestAbort(),
         Promise.resolve().then(() => owned.extensionRunner.emit({ type: "session_shutdown", reason: "quit" })),
       ]);
-      for (const result of results) if (result.status === "rejected") cleanupErrors.push(errorText(result.reason));
+      let cleanupResults: PromiseSettledResult<void>[] | undefined;
+      const observed = cleanup.then((results) => { cleanupResults = results; });
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanupDeadline = new Promise<void>((resolve) => { cleanupTimer = setTimeout(resolve, cleanupTimeoutMs); });
+      await Promise.race([observed, cleanupDeadline]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      if (!cleanupResults) cleanupErrors.push("Owned child cleanup remained pending; process termination is uncertain.");
+      for (const result of cleanupResults ?? []) if (result.status === "rejected") cleanupErrors.push(errorText(result.reason));
       try { unsubscribe?.(); } catch (error) { cleanupErrors.push(errorText(error)); }
       try { owned.dispose(); } catch (error) { cleanupErrors.push(errorText(error)); }
     })();
+    void ownedClose.then(() => {
+      if (noSessionCloseTimer) clearTimeout(noSessionCloseTimer);
+      resolveNoSessionClose?.();
+      resolveNoSessionClose = undefined;
+    }, () => {
+      if (noSessionCloseTimer) clearTimeout(noSessionCloseTimer);
+      resolveNoSessionClose?.();
+      resolveNoSessionClose = undefined;
+    });
+    return ownedClose;
   };
-  const onAbort = () => { interrupted = true; void close(); };
+  const onCancellation = () => {
+    if (interrupted) return;
+    interrupted = true;
+    closeRequested = true;
+    resolveCancellation?.();
+    void close();
+  };
+  const onAbort = () => {
+    if (isResearchTimeoutAbortReason(signal?.reason)) { beginTimeout(); return; }
+    onCancellation();
+  };
+  // Assigned below, but listeners can fire during startup.
+  let beginTimeout: () => void = () => { timedOut = true; };
+  const timeoutFallback = (reason: string): ReportHandoff => createDiagnosticHandoff(
+    `Research timed out; incomplete work is not a completed report. ${reason} ` +
+    `Last active tool: ${activity.latestTool ?? "none"}. The original operation may still be running; ` +
+    `files and verification state are uncertain. Do not assume late work completed.`,
+  );
+  const disableTools = (): boolean => {
+    if (!session) return false;
+    try {
+      if (session.setActiveToolsByName) session.setActiveToolsByName([]);
+      else if (session.setActiveTools) session.setActiveTools([]);
+      else return false;
+      return session.getActiveToolNames().length === 0 && session.getCallableToolNames().length === 0;
+    } catch (error) {
+      cleanupErrors.push(`Unable to disable child tools for timeout handoff: ${errorText(error)}`);
+      return false;
+    }
+  };
+  const handleTimeout = async (): Promise<void> => {
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise<"grace">((resolve) => { graceTimer = setTimeout(() => resolve("grace"), graceMs); });
+    try {
+      if (!session || !primaryOperation) {
+        const first = await Promise.race([grace, cancellation.then(() => "cancelled" as const)]);
+        if (first !== "cancelled" && !interrupted) timeoutHandoff = timeoutFallback("The child was interrupted before its original operation settled; termination is unconfirmed.");
+        return;
+      }
+      // Start abort before waiting. The grace deadline covers abort, settlement, summary, and
+      // persistence rather than only the final model request.
+      const abort = requestAbort().then(() => "settled" as const, () => "abort_failed" as const);
+      const operation = primaryOperation.then(() => "settled" as const, () => "operation_failed" as const);
+      const first = await Promise.race([
+        Promise.all([operation, abort]).then(([, abortResult]) => abortResult === "abort_failed" ? "abort_failed" as const : "settled" as const),
+        grace,
+        cancellation.then(() => "cancelled" as const),
+      ]);
+      if (first === "cancelled" || interrupted) return;
+      if (first !== "settled") {
+        timeoutHandoff = timeoutFallback(first === "abort_failed" ? "Abort/idle did not settle during the grace period; operation termination is unconfirmed." : "Grace period expired before the child became idle; operation termination is unconfirmed.");
+        return;
+      }
+      if (!disableTools()) {
+        timeoutHandoff = timeoutFallback("The SDK could not make every model and callable tool unavailable.");
+        return;
+      }
+      let restoreSummaryRuntime: (() => void) | undefined;
+      try {
+        // Pi 1.1 has no per-prompt option on AgentSession, but the session dispatches through its
+        // child-owned ModelRuntime. Scope a real provider maxTokens cap to this tool-free request.
+        const runtime = runtimeForHandoff;
+        if (runtime) {
+          const original = runtime.streamSimple;
+          runtime.streamSimple = function(this: ModelRuntime, model, context, requestOptions) {
+            const { reasoning: _reasoning, ...withoutReasoning } = requestOptions ?? {};
+            return original.call(this, model, context, {
+              ...withoutReasoning, maxTokens: Math.min(requestOptions?.maxTokens ?? 1024, 1024),
+            });
+          };
+          restoreSummaryRuntime = () => { runtime.streamSimple = original; };
+        }
+        const summaryRequest = session.prompt(
+          "The prior research operation timed out and is now settled. Produce ONE concise, tool-free incomplete handoff (no tools are available). Include exactly: completed work and files changed; unfinished/current work; actual verification including failures or unverified changes; any operation that might still be running; blockers and next steps. State uncertainty plainly. Keep it under 1200 words and do not retry or perform more work.",
+          { expandPromptTemplates: false, source: "extension" },
+        );
+        const summaryFinished = await Promise.race([
+          summaryRequest.then(() => true, (error) => { throw error; }),
+          grace.then(() => false),
+          cancellation.then(() => "cancelled" as const),
+        ]);
+        restoreSummaryRuntime?.(); restoreSummaryRuntime = undefined;
+        if (summaryFinished === "cancelled" || interrupted) return;
+        if (!summaryFinished) {
+          timeoutHandoff = timeoutFallback("Grace period expired while producing the timeout summary; operation termination is unconfirmed.");
+          return;
+        }
+        const summary = history ? finalAssistant(history) : { valid: false as const };
+        if (!summary.valid || !summary.text) throw new Error("summary did not produce one bounded final assistant answer");
+        const savedPromise = createReportHandoff(
+          `Research timed out; incomplete handoff.\n\n${summary.text}`,
+          { workspaceDir, ...(scratchDir !== undefined ? { scratchDir } : {}), forcePersist: true },
+        );
+        const saved = await Promise.race([
+          savedPromise,
+          grace.then(() => undefined),
+          cancellation.then(() => "cancelled" as const),
+        ]);
+        if (saved === "cancelled" || interrupted) return;
+        if (!saved) {
+          timeoutHandoff = timeoutFallback("Grace period expired while persisting the timeout handoff; operation termination is unconfirmed.");
+          return;
+        }
+        timeoutHandoff = saved.isError
+          ? timeoutFallback(`Persisting the bounded timeout handoff failed: ${saved.text}`)
+          : { ...saved, isError: true };
+      } catch (error) {
+        timeoutHandoff = timeoutFallback(`Tool-free timeout summary failed: ${errorText(error)}`);
+      } finally {
+        restoreSummaryRuntime?.();
+      }
+    } finally {
+      if (graceTimer) clearTimeout(graceTimer);
+    }
+  };
+  beginTimeout = () => {
+    // An explicit cancellation that was already ready wins over a timeout
+    // handoff, including when both signals are pre-aborted.
+    if (timeoutStarted || interrupted) return;
+    timeoutStarted = true;
+    timedOut = true;
+    timeoutWorkflow = handleTimeout().finally(() => resolveTimeoutDone?.());
+  };
+  const onDeadline = () => beginTimeout();
   signal?.addEventListener("abort", onAbort, { once: true });
+  cancellationSignal?.addEventListener("abort", onCancellation, { once: true });
+  deadlineSignal?.addEventListener("abort", onDeadline, { once: true });
+  // AbortSignal does not replay an earlier abort to a newly-added listener.
+  // Process ready signals synchronously so startup cannot wait forever for the
+  // cancellation promise, and let explicit cancellation win over a handoff.
+  if (cancellationSignal?.aborted) onCancellation();
+  if (isResearchTimeoutAbortReason(signal?.reason)) onAbort();
+  if (deadlineSignal?.aborted) onDeadline();
+  if (signal?.aborted && !isResearchTimeoutAbortReason(signal.reason)) onAbort();
   try {
+    startupOperation = (async () => {
     signal?.throwIfAborted();
+    if (interrupted || cancellationSignal?.aborted || timedOut || deadlineSignal?.aborted) {
+      throw new Error(interrupted ? "Research cancelled before startup." : "Research interrupted before startup.");
+    }
     const { agent, task } = parseResearchInput(input, options.profileRegistry);
     const loadedProfile = overrides.loadProfile
       ? overrides.loadProfile(agent)
@@ -302,6 +522,7 @@ export async function runResearchSession(
     if (selectedTools.includes("find")) requireScoutBinary("fd", services.hasScoutBinary);
     const selection = selectModel(agent, options.config, options.parent, profileDefaults, options.profileRegistry);
     const runtime = await services.createModelRuntime(agentDir, selection, signal);
+    runtimeForHandoff = runtime;
     signal?.throwIfAborted();
     const modelError = runtime.getError();
     if (modelError) throw new Error(`Child model configuration failed: ${modelError}`);
@@ -336,14 +557,16 @@ export async function runResearchSession(
     const loadErrors = resourceLoader.getExtensions().errors;
     if (loadErrors.length) throw new Error(`Child extension loading failed: ${loadErrors.map((error) => error.error).join("; ")}`);
     signal?.throwIfAborted();
-    const created = await services.createSession({
+    sessionCreation = services.createSession({
       cwd, agentDir, modelRuntime: runtime, model,
       ...(selection.thinkingLevel !== undefined ? { thinkingLevel: selection.thinkingLevel } : {}),
       tools: [...selectedTools], settingsManager, sessionManager: history, resourceLoader,
       ...((selectedTools.includes("grep") || selectedTools.includes("find"))
         ? { customTools: createScoutTools(cwd, services.hasScoutBinary, selectedTools) } : {}),
     });
+    const created = await sessionCreation;
     session = created.session;
+    if (closeRequested) { await close(); return; }
     signal?.throwIfAborted();
     if (created.modelFallbackMessage || session.model?.provider !== selection.provider || session.model.id !== selection.modelId) {
       throw new Error("Child SDK did not retain the exact selected model; refusing fallback.");
@@ -392,35 +615,80 @@ export async function runResearchSession(
     }
     signal?.throwIfAborted();
     if (lifecycleError) throw new Error(`Child extension failed: ${lifecycleError}`);
+    if (timedOut || interrupted || cancellationSignal?.aborted || deadlineSignal?.aborted) {
+      throw new Error("Research interrupted before the child operation could start.");
+    }
     // The fixed prefix is defense in depth; false also disables extension/skill/template commands.
     // Task bytes after the prefix are unchanged, including leading slashes, @paths, and whitespace.
-    await session.prompt(`Subagent task (literal data):\n\n${task}`, { expandPromptTemplates: false, source: "extension" });
-    signal?.throwIfAborted();
-    if (lifecycleError) throw new Error(`Child extension failed: ${lifecycleError}`);
-    // Read the last finalized message on the active branch after all automatic recovery.
-    // The next-request projection can compact away an answer or omit a failed retry attempt;
-    // neither a summary nor earlier narration is a replacement for that terminal response.
-    const lastEntry = history.getBranch().findLast((entry) => entry.type === "message" && entry.message.role !== "system");
-    const final = lastEntry?.type === "message" ? lastEntry.message : undefined;
-    if (!final || final.role !== "assistant") throw new Error("Child finished without a final assistant answer.");
-    if (final.stopReason !== "stop" || final.content.some((part) => part.type === "toolCall")) {
-      interrupted = final.stopReason === "aborted";
-      throw new Error(`Child did not complete a report (${final.stopReason}).${final.errorMessage ? ` ${final.errorMessage}` : ""}`);
+    primaryOperation = session.prompt(`Subagent task (literal data):\n\n${task}`, { expandPromptTemplates: false, source: "extension" });
+    // Always attach a rejection handler: a late provider/tool result after timeout must not become
+    // an unhandled rejection or mutate the already irreversible timed-out outcome.
+    await Promise.race([
+      primaryOperation.then(() => undefined, (error) => { failure = errorText(error); }),
+      cancellation,
+      timeoutDone,
+    ]);
+    if (timedOut) {
+      await timeoutWorkflow;
+    } else if (interrupted || signal?.aborted) {
+      // Explicit cancellation skips every handoff, including while timeout grace is active.
+      throw new Error("Research cancelled; no completed report is claimed.");
+    } else {
+      if (lifecycleError) throw new Error(`Child extension failed: ${lifecycleError}`);
+      const final = finalAssistant(history);
+      if (final.aborted) interrupted = true;
+      if (!final.valid || !final.text) throw new Error("Child finished without a final assistant answer.");
+      report = final.text;
+      if (agent === "researcher" && selectedKetchTools.length && ketchCalls === 0) {
+        throw new Error("Researcher finished without using an external Ketch lookup; no sourced report is claimed. Use scout for local repository work.");
+      }
     }
-    report = final.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-    if (!report.trim()) throw new Error("Child finished with an empty final report.");
-    if (agent === "researcher" && selectedKetchTools.length && ketchCalls === 0) {
-      throw new Error("Researcher finished without using an external Ketch lookup; no sourced report is claimed. Use scout for local repository work.");
-    }
+    })();
+    // Startup includes model/catalog/auth loading, extension readiness, session creation, and
+    // submission. Never let an SDK promise that ignores AbortSignal pin the runner indefinitely.
+    await Promise.race([startupOperation, cancellation, timeoutDone]);
   } catch (error) {
     failure = errorText(error);
   } finally {
+    // Timeout handoff persistence happens in handleTimeout before this disposal boundary.
     await close();
+    // If createSession ignored cancellation, give its late result one bounded opportunity to reach
+    // the ownership assignment and disposal path. Do not wait on arbitrary startup promises.
+    if (!session && sessionCreation) {
+      const lateClose = sessionCreation.then((created) => {
+        session = created.session;
+        return close();
+      }, () => undefined);
+      await Promise.race([
+        lateClose,
+        new Promise<void>((resolve) => setTimeout(resolve, cleanupTimeoutMs)),
+      ]);
+    }
     signal?.removeEventListener("abort", onAbort);
+    cancellationSignal?.removeEventListener("abort", onCancellation);
+    deadlineSignal?.removeEventListener("abort", onDeadline);
   }
   const usage = history ? collectUsage(history) : undefined;
   const cleanup = cleanupErrors.length ? ` Cleanup failed: ${cleanupErrors.join("; ")}` : "";
-  if (signal?.aborted || interrupted) {
+  const addTimeoutCleanup = (handoff: ReportHandoff): ReportHandoff => {
+    if (!cleanup) return { ...handoff, isError: true };
+    const diagnostic = createDiagnosticHandoff(`${handoff.text}\n\n${cleanup} Operation termination is unconfirmed.`);
+    return { ...handoff, text: diagnostic.text, truncated: diagnostic.truncated, isError: true };
+  };
+  if ((signal?.aborted && !isResearchTimeoutAbortReason(signal.reason)) || interrupted) {
+    return { status: "cancelled", handoff: createDiagnosticHandoff(`Research cancelled; no completed report is claimed.${cleanup}`), activity, ...(usage ? { usage } : {}) };
+  }
+  if (timedOut) {
+    const handoff = addTimeoutCleanup(timeoutHandoff ?? timeoutFallback(
+      `${failure ?? "No safe timeout handoff was produced."}${cleanup}`,
+    ));
+    return {
+      status: "timed_out", handoff, activity,
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(usage ? { usage } : {}),
+    };
+  }
+  if (signal?.aborted) {
     return { status: "cancelled", handoff: createDiagnosticHandoff(`Research cancelled; no completed report is claimed.${cleanup}`), activity, ...(usage ? { usage } : {}) };
   }
   if (failure || lifecycleError || cleanup || report === undefined) {

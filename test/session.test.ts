@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { getEventListeners } from "node:events";
 import test, { type TestContext } from "node:test";
 import { Type } from "typebox";
 import type { AgentSessionEvent, CreateAgentSessionOptions, ExtensionError, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -9,7 +11,7 @@ import { parseConfig } from "../lib/config.ts";
 import type { ProfileName, ProfilePrompt } from "../lib/profiles.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
 import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
-import { assistant, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
+import { assistant, completedStream, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
 
 async function options(t: TestContext): Promise<ResearchSessionOptions> {
   const root = await fs.mkdtemp(join(tmpdir(), "research-session-unit-"));
@@ -36,13 +38,15 @@ function harness(run: (script: Script) => Promise<void> | void = ({ append }) =>
     hasScoutBinary: () => true,
     async createSession(input) {
       launches.push(input);
-      const tools = [...input.tools!];
+      let tools = [...input.tools!];
       const history = input.sessionManager!;
       const emit = (event: AgentSessionEvent) => { for (const listener of listeners) listener(event); };
       instance = {
         model: input.model!,
         getAllTools: () => tools.map((name) => ({ name, description: "fixture", parameters: Type.Object({}), exposure: "direct", sourceInfo: { path: "<fixture>", source: "fixture", scope: "temporary", origin: "top-level" } })),
         getActiveToolNames: () => [...tools], getCallableToolNames: () => [...tools],
+        setActiveToolsByName(names) { tools = [...names]; },
+        setActiveTools(names) { tools = [...names]; },
         subscribe(listener) { calls.push("subscribe"); listeners.add(listener); return () => { calls.push("unsubscribe"); listeners.delete(listener); }; },
         async bindExtensions(bindings) { calls.push("bind"); reportError = bindings.onError; },
         async prompt(request, promptOptions) {
@@ -76,6 +80,27 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   const controller = new AbortController(); controller.abort();
   assert.equal((await runResearchSession({ agent: "scout", task: "x" }, { ...opts, signal: controller.signal }, h.services)).status, "cancelled");
   assert.equal(h.launches.length, 0);
+});
+
+test("pre-aborted cancellation is ready synchronously and all abort listeners are removed", async (t) => {
+  const opts = await options(t);
+  const signal = new AbortController();
+  const cancellation = signal;
+  const deadline = new AbortController();
+  cancellation.abort();
+  const h = harness();
+  h.services.createModelRuntime = () => new Promise(() => {});
+  const result = await Promise.race([
+    runResearchSession({ agent: "scout", task: "already cancelled" }, {
+      ...opts, signal: signal.signal, cancellationSignal: cancellation.signal, deadlineSignal: deadline.signal, cleanupTimeoutMs: 10,
+    }, h.services),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("cancellation startup hung")), 100)),
+  ]);
+  assert.equal(result.status, "cancelled");
+  assert.equal(h.launches.length, 0);
+  assert.equal(getEventListeners(signal.signal, "abort").length, 0);
+  assert.equal(getEventListeners(cancellation.signal, "abort").length, 0);
+  assert.equal(getEventListeners(deadline.signal, "abort").length, 0);
 });
 
 test("worker sessions receive only implementation tools and no research extension", async (t) => {
@@ -310,6 +335,87 @@ test("overall prompt settlement, not an early agent end or recoverable error, de
   assert.equal(result.handoff.text, "Recovered final report"); assert.equal(result.status, "completed");
 });
 
+test("deadline interruption settles, disables tools, and makes one same-session bounded handoff", async (t) => {
+  const opts = await options(t);
+  const deadline = new AbortController();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const h = harness(async ({ request, append }) => {
+    if (request.startsWith("Subagent task")) {
+      await blocked;
+      append(assistant("Partial work", "aborted"));
+    } else {
+      append(assistant("Completed work and files changed: none.\\nUnfinished/current work: unknown.\\nVerification: unverified; the operation may still be running.\\nBlockers/next steps: inspect the child state."));
+    }
+  });
+  const create = h.services.createSession;
+  h.services.createSession = async (input) => {
+    const created = await create(input);
+    created.session.abort = async () => { h.calls.push("abort"); release(); };
+    return created;
+  };
+  const pending = runResearchSession({ agent: "scout", task: "deadline task" }, {
+    ...opts, deadlineSignal: deadline.signal, timeoutGraceMs: 100,
+  }, h.services);
+  while (!h.calls.includes("prompt")) await tick();
+  deadline.abort();
+  const result = await pending;
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.handoff.isError, true);
+  assert.match(result.handoff.text, /Completed work and files changed/);
+  assert.equal(h.calls.filter((call) => call === "prompt").length, 2);
+  assert.deepEqual(h.session.getActiveToolNames(), []);
+  assert.deepEqual(h.session.getCallableToolNames(), []);
+});
+
+test("timeout summary uses a real runtime maxTokens cap and is persisted before disposal", async (t) => {
+  const opts = await options(t);
+  const scratchDir = join(dirname(opts.workspaceDir), "retained-reports");
+  await fs.mkdir(scratchDir);
+  const deadline = new AbortController();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let summaryMaxTokens: number | undefined;
+  let persistedBeforeDispose = false;
+  const h = harness(async ({ request, append }) => {
+    if (request.startsWith("Subagent task")) await blocked;
+    else append(assistant("Completed work and files changed: none. Unfinished/current work: inspect the partial files."));
+  });
+  const create = h.services.createSession;
+  h.services.createSession = async (input) => {
+    const created = await create(input);
+    const runtime = input.modelRuntime!;
+    runtime.streamSimple = ((_model, _context, requestOptions) => {
+      summaryMaxTokens = requestOptions?.maxTokens;
+      return completedStream(assistant("runtime summary"));
+    }) as typeof runtime.streamSimple;
+    const prompt = created.session.prompt.bind(created.session);
+    created.session.prompt = async (request, promptOptions) => {
+      if (!request.startsWith("Subagent task")) {
+        await runtime.streamSimple(input.model!, { messages: [] } as never, {});
+      }
+      return prompt(request, promptOptions);
+    };
+    created.session.abort = async () => { release(); };
+    const dispose = created.session.dispose.bind(created.session);
+    created.session.dispose = () => {
+      persistedBeforeDispose = readdirSync(scratchDir).some((entry) => existsSync(join(scratchDir, entry, "report.md")));
+      dispose();
+    };
+    return created;
+  };
+  const pending = runResearchSession({ agent: "scout", task: "deadline task" }, {
+    ...opts, deadlineSignal: deadline.signal, timeoutGraceMs: 100, scratchDir,
+  }, h.services);
+  while (!h.calls.includes("prompt")) await tick();
+  deadline.abort();
+  const result = await pending;
+  assert.equal(result.status, "timed_out");
+  assert.equal(summaryMaxTokens, 1024);
+  assert.equal(persistedBeforeDispose, true);
+  assert.ok(result.handoff.reportPath);
+});
+
 test("terminal failures cannot fall back to earlier narration, even when prompt resolves normally", async (t) => {
   const opts = await options(t);
   for (const reason of ["error", "aborted", "length", "toolUse", "pending", "deferred"] as const) {
@@ -451,6 +557,31 @@ test("cancellation during session creation still shuts down the late-created own
   controller.abort(); release();
   assert.equal((await pending).status, "cancelled");
   assert.deepEqual(h.calls, ["abort", "shutdown", "dispose"]);
+});
+
+test("deadline and explicit cancellation bound hung runtime/session startup without fabricating a report", async (t) => {
+  const opts = await options(t);
+  for (const phase of ["runtime", "session"] as const) {
+    const controller = new AbortController();
+    const h = harness();
+    if (phase === "runtime") h.services.createModelRuntime = () => new Promise(() => {});
+    else h.services.createSession = async () => new Promise(() => {});
+    const pending = runResearchSession({ agent: "scout", task: `hung ${phase}` }, {
+      ...opts, deadlineSignal: controller.signal, timeoutGraceMs: 15, cleanupTimeoutMs: 10,
+    }, h.services);
+    controller.abort();
+    const timedOut = await pending;
+    assert.equal(timedOut.status, "timed_out");
+    assert.match(timedOut.handoff.text, /timed out/);
+  }
+  const controller = new AbortController();
+  const h = harness();
+  h.services.createModelRuntime = () => new Promise(() => {});
+  const pending = runResearchSession({ agent: "scout", task: "cancelled startup" }, {
+    ...opts, signal: controller.signal, cleanupTimeoutMs: 10,
+  }, h.services);
+  controller.abort();
+  assert.equal((await pending).status, "cancelled");
 });
 
 test("activity callback failures cannot break native persistence/cleanup and unknown tool names are bounded metadata", async (t) => {

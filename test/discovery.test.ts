@@ -7,7 +7,7 @@ import { Value } from "typebox/value";
 import { createResearchExtension } from "../extensions/research.ts";
 import { ResearchConfigSchema, parseConfig, selectModel } from "../lib/config.ts";
 import { ResearchInputSchema, discoverProfiles, loadProfile, parseResearchInput } from "../lib/profiles.ts";
-import { ResearchRunner } from "../lib/runner.ts";
+import { ResearchRunner, resolveResearchTimeout } from "../lib/runner.ts";
 import type { SessionOutcome } from "../lib/session.ts";
 
 function outcome(): SessionOutcome {
@@ -24,16 +24,20 @@ test("a markdown agent definition supplies the schema, config, model, prompt, an
   writeFileSync(join(root, "README.md"), "ignored");
   writeFileSync(join(root, "notes.txt"), "ignored");
   writeFileSync(join(root, ".hidden.md"), "ignored");
-  writeFileSync(join(root, "reviewer.md"), `---\nmodel: fixture/reviewer\nthinking: low\ntools: [read, grep]\ndescription: Reviews local changes without editing.\n---\n# Reviewer\nInspect the requested changes.`);
+  writeFileSync(join(root, "reviewer.md"), `---\nmodel: fixture/reviewer\nthinking: low\nmaxTimeout: 30\ntools: [read, grep]\ndescription: Reviews local changes without editing.\n---\n# Reviewer\nInspect the requested changes.`);
 
   const registry = discoverProfiles(root);
   assert.deepEqual(registry.names, ["reviewer"]);
   assert.equal(registry.profiles.reviewer?.description, "Reviews local changes without editing.");
   assert.deepEqual(loadProfile("reviewer", registry).tools, ["read", "grep"]);
   assert.deepEqual(loadProfile("reviewer", registry).defaults, { model: "fixture/reviewer", thinking: "low" });
-  assert.deepEqual(parseResearchInput({ agent: "reviewer", task: "review this" }, registry), {
-    agent: "reviewer", task: "review this",
+  assert.equal(loadProfile("reviewer", registry).maxTimeout, 30);
+  assert.deepEqual(parseResearchInput({ agent: "reviewer", task: "review this", timeout_ms: 5000 }, registry), {
+    agent: "reviewer", task: "review this", timeout_ms: 5000,
   });
+  assert.equal(resolveResearchTimeout({ agent: "reviewer", task: "review" }, 120_000, registry), 30_000);
+  assert.throws(() => resolveResearchTimeout({ agent: "reviewer", task: "review", timeout_ms: 0 }, 120_000, registry), /exceeds/);
+  assert.throws(() => resolveResearchTimeout({ agent: "reviewer", task: "review", timeout_ms: 30_001 }, 120_000, registry), /exceeds/);
   assert.throws(() => parseResearchInput({ agent: "scout", task: "not registered" }, registry), /Invalid research input/);
   const config = parseConfig({ profiles: { reviewer: { thinking: "high" } } }, registry);
   assert.equal(config.profiles.reviewer?.thinking, "high");
@@ -108,6 +112,20 @@ function baseSessionOptions(root: string) {
     parent: { model: { provider: "fixture", id: "parent" } },
   } as const;
 }
+
+test("timeout policy preserves unlimited and finite-ceiling semantics", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "research-timeout-policy-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "unbounded.md"), "---\nmaxTimeout: 0\n---\n# Unbounded");
+  writeFileSync(join(root, "global.md"), "# Global");
+  writeFileSync(join(root, "bounded.md"), "---\nmaxTimeout: 10\n---\n# Bounded");
+  const registry = discoverProfiles(root);
+  assert.equal(resolveResearchTimeout({ agent: "global", task: "x" }, 0, registry), undefined);
+  assert.equal(resolveResearchTimeout({ agent: "bounded", task: "x" }, 0, registry), 10_000);
+  assert.equal(resolveResearchTimeout({ agent: "unbounded", task: "x" }, 5000, registry), undefined);
+  assert.equal(resolveResearchTimeout({ agent: "unbounded", task: "x", timeout_ms: 2500 }, 0, registry), 2500);
+  assert.throws(() => resolveResearchTimeout({ agent: "bounded", task: "x", timeout_ms: 0 }, 0, registry), /exceeds/);
+});
 
 test("schema snapshots are deeply immutable and parsing keeps independent registry membership", (t) => {
   const root = mkdtempSync(join(tmpdir(), "research-agent-schema-"));

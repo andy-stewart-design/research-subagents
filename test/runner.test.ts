@@ -78,6 +78,25 @@ test("no timeout is allocated by default and long completion is successful", asy
   assert.equal(aborted, false);
 });
 
+test("abort during listener registration cannot queue or start a child", async () => {
+  const controller = new AbortController();
+  let started = false;
+  const original = controller.signal.addEventListener.bind(controller.signal);
+  controller.signal.addEventListener = ((...args: any[]) => {
+    original(args[0], args[1], args[2]);
+    controller.abort();
+  }) as typeof controller.signal.addEventListener;
+  const runner = new ResearchRunner({ maxConcurrency: 1, runSession: async () => {
+    started = true;
+    return completed("should-not-start");
+  } });
+  const result = await runner.run({ agent: "scout", task: "race" }, options("race", controller.signal));
+  assert.equal(result.status, "cancelled");
+  assert.equal(started, false);
+  assert.equal(runner.activeCount, 0);
+  assert.equal(runner.queuedCount, 0);
+});
+
 test("configured timeout starts only after a slot is granted and returns timed_out", async () => {
   let releaseFirst!: () => void;
   const firstReady = new Promise<void>((resolve) => { releaseFirst = resolve; });

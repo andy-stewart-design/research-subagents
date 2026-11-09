@@ -13,6 +13,8 @@ export type SupportedToolName = (typeof SUPPORTED_TOOLS)[number];
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const MODEL_PATTERN = /^[^/\s]+\/\S+$/u;
 const SAFE_PROFILE_NAME = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
+/** Keep seconds-to-milliseconds conversion exact and timer scheduling bounded by safe integers. */
+export const MAX_TIMEOUT_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const RESERVED_PROFILE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const DEFAULT_AGENTS_DIR = fileURLToPath(new URL("../agents/", import.meta.url));
 
@@ -40,6 +42,8 @@ export interface Profile {
   readonly name: string;
   readonly description: string;
   readonly tools: readonly string[];
+  /** Optional per-agent ceiling in seconds; zero explicitly means unlimited. */
+  readonly maxTimeout?: number;
 }
 
 export interface ProfileDefaults {
@@ -50,6 +54,8 @@ export interface ProfileDefaults {
 export interface ProfilePrompt {
   readonly text: string;
   readonly defaults: ProfileDefaults;
+  /** Optional per-agent ceiling in nonnegative seconds; zero means unlimited. */
+  readonly maxTimeout?: number;
   /** Effective allowlist from markdown, or the profile's safe default when omitted. */
   readonly tools: readonly string[];
   /** Optional public description from frontmatter. */
@@ -91,6 +97,10 @@ export function createResearchInputSchema(registry: ProfileRegistry): TSchema {
         pattern: "\\S",
         description: "Self-contained research question and necessary context.",
       }),
+      timeout_ms: Type.Optional(
+        Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER,
+          description: "Optional per-call deadline in milliseconds; 0 means unlimited when permitted." }),
+      ),
     },
     { additionalProperties: false },
   ));
@@ -99,17 +109,21 @@ export function createResearchInputSchema(registry: ProfileRegistry): TSchema {
 export interface ResearchInput {
   readonly agent: ProfileName;
   readonly task: string;
+  readonly timeout_ms?: number;
 }
 
 function profileNames(registry: ProfileRegistry): string {
   return registry.names.join('", "');
 }
 
-function validResearchInput(input: unknown, registry: ProfileRegistry): input is { agent: string; task: string } {
+function validResearchInput(input: unknown, registry: ProfileRegistry): input is { agent: string; task: string; timeout_ms?: number } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
   const value = input as Record<string, unknown>;
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== 2 || !Object.hasOwn(value, "agent") || !Object.hasOwn(value, "task")) return false;
+  if ((keys.length !== 2 && keys.length !== 3) || !Object.hasOwn(value, "agent") || !Object.hasOwn(value, "task")) return false;
+  if (keys.length === 3 && !Object.hasOwn(value, "timeout_ms")) return false;
+  if (Object.hasOwn(value, "timeout_ms") &&
+    (!Number.isSafeInteger(value.timeout_ms) || (value.timeout_ms as number) < 0)) return false;
   return typeof value.agent === "string" && registry.names.includes(value.agent)
     && typeof value.task === "string" && value.task.length >= 1 && /\S/u.test(value.task);
 }
@@ -124,7 +138,11 @@ export function parseResearchInput(input: unknown, registry?: ProfileRegistry): 
     );
   }
   // Keep the task literal: validation must not trim, expand, or execute it.
-  return { agent: input.agent, task: input.task };
+  return {
+    agent: input.agent,
+    task: input.task,
+    ...(Object.hasOwn(input, "timeout_ms") ? { timeout_ms: input.timeout_ms as number } : {}),
+  };
 }
 
 function fallbackFor(name: string): BundledFallback | undefined {
@@ -233,7 +251,7 @@ function parseFrontmatter(name: string, source: string): ParsedFrontmatter {
       const key = line.slice(0, separator).trim();
       const value = stripInlineComment(line.slice(separator + 1));
       if (!value && key !== "tools") throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
-      if (!["model", "thinking", "tools", "description"].includes(key)) {
+      if (!["model", "thinking", "tools", "description", "maxTimeout"].includes(key)) {
         throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
       }
       if (Object.hasOwn(metadata, key)) throw new Error(`Invalid ${name} prompt frontmatter: duplicate ${key}.`);
@@ -253,11 +271,23 @@ export function parseProfilePrompt(
   const model = metadata.model === undefined ? undefined : unwrapScalar(metadata.model);
   const thinking = metadata.thinking === undefined ? undefined : unwrapScalar(metadata.thinking);
   const description = metadata.description === undefined ? undefined : unwrapScalar(metadata.description).trim();
+  const rawMaxTimeout = metadata.maxTimeout === undefined ? undefined : unwrapScalar(metadata.maxTimeout).trim();
+  let maxTimeout: number | undefined;
+  if (rawMaxTimeout !== undefined) {
+    if (!/^\d+$/u.test(rawMaxTimeout)) {
+      throw new Error(`Invalid ${name} prompt maxTimeout: expected a nonnegative integer number of seconds.`);
+    }
+    maxTimeout = Number(rawMaxTimeout);
+    if (!Number.isSafeInteger(maxTimeout) || maxTimeout > MAX_TIMEOUT_SECONDS) {
+      throw new Error(`Invalid ${name} prompt maxTimeout: seconds exceed the safe timeout range.`);
+    }
+  }
   if (description !== undefined && !description) throw new Error(`Invalid ${name} prompt description: expected non-empty text.`);
   if (model !== undefined && !MODEL_PATTERN.test(model)) throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
   if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ThinkingLevel)) throw new Error(`Invalid ${name} prompt thinking level: ${thinking}.`);
   return {
     text,
+    ...(maxTimeout !== undefined ? { maxTimeout } : {}),
     tools: parseTools(name, metadata.tools, fallbackTools),
     defaults: Object.freeze({
       ...(model !== undefined ? { model } : {}),
@@ -298,7 +328,10 @@ export function discoverProfiles(agentsDir = DEFAULT_AGENTS_DIR): ProfileRegistr
     catch (error) { throw new Error(`Invalid agent definition ${path}: ${error instanceof Error ? error.message : "invalid definition"}`, { cause: error }); }
     const fallback = fallbackFor(name);
     const description = prompt.description || fallback?.description || `Custom ${name} agent.`;
-    const profile = Object.freeze({ name, description, tools: Object.freeze([...prompt.tools]) });
+    const profile = Object.freeze({
+      name, description, tools: Object.freeze([...prompt.tools]),
+      ...(prompt.maxTimeout !== undefined ? { maxTimeout: prompt.maxTimeout } : {}),
+    });
     profiles[name] = profile;
     prompts[name] = Object.freeze({ ...prompt, description });
     names.push(name);

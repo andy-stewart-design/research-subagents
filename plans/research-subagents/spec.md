@@ -31,7 +31,7 @@ Non-goals:
 - Resumable child conversations, inherited parent transcripts, automatic parent-context extraction, or persistent research memory.
 - Project-defined agents, dynamic third-party agent registration, or general agent discovery.
 - OS sandboxing, filesystem-root enforcement, private-network blocking, or credential isolation.
-- Hard per-run token, spend, turn, or tool-call budgets; graceful budget-exhaustion summarization.
+- Hard per-run token, spend, turn, or tool-call budgets (wall-clock timeout recovery is specified below).
 - Reimplementing Ketch's backends, MCP transport, tool schemas, cache, or configuration UI.
 - Crawl and bookmark workflows, sophisticated nested-agent rendering, or a usage dashboard.
 
@@ -63,7 +63,7 @@ Preserve fresh contexts, completion-driven runs, and parent cancellation. Delibe
 - **R4 — Shared research capabilities:** The parent can call the selected Ketch tools programmatically without spawning a research child. Researcher uses those same Ketch capabilities and configured backends rather than a second web-tool implementation. Missing required capabilities must produce an actionable failure, not a tool-less research run.
 - **R5 — Explicit model selection:** Model/thinking selection follows the documented inheritance and profile-override rules. An unavailable selected model or credentials must fail clearly rather than silently switch provider/model or modify credentials.
 - **R6 — Bounded handoff:** The model-facing delegation result contains a compact report or bounded diagnostic, never the child's raw transcript, reasoning trace, or accumulated tool results. Report policy requests evidence and uncertainty. A hard byte cap and explicit overflow behavior apply to every profile and terminal outcome.
-- **R7 — Completion-driven lifecycle:** A child normally runs to completion without an imposed research-call, turn, token, or spend budget. An optional configurable wall-clock timeout is a failsafe. Interrupted work must not be presented as a completed report, and no graceful partial synthesis is promised.
+- **R7 — Completion-driven lifecycle:** A child normally runs to completion without an imposed research-call, turn, token, or spend budget. An optional configurable wall-clock timeout is a failsafe. Interrupted work must not be presented as a completed report; a timeout may receive one bounded same-session incomplete handoff after settlement, while cancellation never synthesizes.
 - **R8 — Concurrency and cancellation:** Concurrent delegation calls share a bounded child-runner capacity. Cancellation applies while queued and while running, releases capacity, and cleans up owned processes/resources. Cancelling one invocation must not cancel unrelated children or parent-owned MCP connections.
 - **R9 — Truthful results and recovery:** Success requires authoritative successful child completion and nonempty final report text. Process failure, terminal assistant error/abort, missing tools, empty output, and interruption are distinguishable from success. A substantive "no relevant findings" report is allowed. A new invocation is an independent retry, not a continuation of stale child state.
 - **R10 — Minimal observability:** Users can distinguish queued, running, and terminal states, identify the profile/task, and see basic activity while a child runs. The tool remains functional without an interactive UI, and progress does not become a full transcript handoff.
@@ -117,7 +117,7 @@ The following are inferred v1 baseline defaults, not separately user-approved va
 | Model | Parent's active provider/model captured at dispatch; optional user-configured per-profile override |
 | Thinking | Parent's level unless overridden per profile; clamp to the selected model's supported levels |
 | Maximum concurrent children | Two per parent extension runtime, shared across delegation calls |
-| Safety timeout | Disabled unless configured; a configured value is positive and applies from child startup, not queue entry |
+| Safety timeout | Disabled unless configured; `0` is unlimited, positive integer milliseconds start after a queue slot, and agent/call ceilings may shorten it |
 | Report target | Usually 400–800 words; shorter answers are preferable when sufficient |
 | Hard model-facing result cap | 12 KiB UTF-8, including headings, overflow notice, path, or diagnostic |
 | Profile discovery | Three bundled profiles only |
@@ -168,7 +168,7 @@ A terminal assistant error/abort can occur even when the process exits zero. Pro
 
 Ketch errors retain their useful distinctions: validation errors require different input, missing configuration requires operator action, and upstream failures may be transient. Recoverable tool errors may be investigated by the child. A terminal run failure remains a failed delegation. Batch scrape per-URL errors and search backend partial failures must not be silently treated as evidence that every source succeeded.
 
-If interruption leaves an already finalized text fragment that is shown, label it incomplete; no partial result is required. The parent can request another fresh investigation. Neither timeout nor ordinary invocation automatically edits configuration, installs dependencies, changes authentication, or retries the entire delegation indefinitely.
+If interruption leaves an already finalized text fragment that is shown, label it incomplete. A deadline gets one bounded, tool-free same-session handoff only after the original operation settles; cancellation skips that handoff. The parent can request another fresh investigation. Neither timeout nor ordinary invocation automatically edits configuration, installs dependencies, changes authentication, or retries the entire delegation indefinitely.
 
 ### Parent user flow
 

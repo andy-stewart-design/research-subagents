@@ -87,6 +87,7 @@ function finalDetails(
     task: previewTask(input.task),
     activity: finalStatus?.activity ?? outcome.activity,
     ...(finalStatus?.elapsedMs !== undefined ? { elapsedMs: finalStatus.elapsedMs } : {}),
+    ...(finalStatus?.timeoutMs !== undefined ? { timeoutMs: finalStatus.timeoutMs } : {}),
     ...(finalStatus?.model !== undefined ? { model: finalStatus.model } : {}),
     ...(finalStatus?.thinkingLevel !== undefined ? { thinkingLevel: finalStatus.thinkingLevel } : {}),
     ...(outcome.handoff.truncated ? { truncated: true } : {}),

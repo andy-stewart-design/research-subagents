@@ -28,7 +28,7 @@ test("defaults have concurrency two and no research timeout or other budget", ()
 test("explicit concurrency, timeout, and per-profile overrides are preserved", () => {
   const input = {
     maxConcurrency: 3,
-    timeoutMs: 250.5,
+    timeoutMs: 250,
     profiles: {
       scout: { model: "provider/model", thinking: "off" },
       researcher: { thinking: "high" },
@@ -37,6 +37,11 @@ test("explicit concurrency, timeout, and per-profile overrides are preserved", (
   };
   const parsed = parseConfig(input);
   assert.deepEqual({ ...parsed, profiles: { ...parsed.profiles } }, input);
+});
+
+test("zero explicitly selects an unlimited global timeout", () => {
+  assert.equal(parseConfig({ timeoutMs: 0 }).timeoutMs, 0);
+  assert.throws(() => parseConfig({ timeoutMs: Number.MAX_SAFE_INTEGER + 1 }), /Invalid research configuration/);
 });
 
 test("all target SDK thinking levels are accepted", () => {
@@ -51,7 +56,7 @@ test("invalid configuration shapes and unknown fields fail instead of being igno
     null, [], false, 4, "config",
     { maxConcurrency: 0 }, { maxConcurrency: -1 }, { maxConcurrency: 1.5 },
     { maxConcurrency: "2" }, { maxConcurrency: Infinity }, { maxConcurrency: Number.MAX_SAFE_INTEGER + 1 },
-    { timeoutMs: 0 }, { timeoutMs: -1 }, { timeoutMs: "100" },
+    { timeoutMs: -1 }, { timeoutMs: 1.5 }, { timeoutMs: "100" },
     { timeoutMs: NaN }, { timeoutMs: Infinity }, { timeoutMs: null },
     { profiles: [] }, { profiles: null }, { profiles: { planner: {} } },
     { profiles: { scout: null } }, { profiles: { scout: { thinking: "ultra" } } },

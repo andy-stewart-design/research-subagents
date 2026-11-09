@@ -2,6 +2,7 @@
 model: openai-codex/gpt-5.6-luna
 thinking: high
 tools: [read, write, edit, bash]
+maxTimeout: 900
 ---
 
 # Worker

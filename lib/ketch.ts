@@ -151,7 +151,9 @@ async function waitForOwnedGroupExit(pid: number): Promise<void> {
 
 const execFileAsync = promisify(execFile);
 async function listOwnedGroupMembers(groupId: number): Promise<number[]> {
-  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,pgid="]);
+  // This is only a fallback after group signalling. Keep process inspection inside the same
+  // bounded cleanup contract as the native transport; a wedged `ps` must not hold the watchdog.
+  const { stdout } = await execFileAsync("ps", ["-eo", "pid=,pgid="], { timeout: 1_000, killSignal: "SIGKILL" });
   return stdout.split("\n").flatMap((line) => {
     const values = line.trim().split(/\s+/u).map(Number);
     if (values.length < 2) return [];
@@ -176,11 +178,11 @@ function settleWithin(promise: Promise<void>, timeoutMs: number): Promise<boolea
 
 async function forceOwnedProcessExit(pid: number): Promise<void> {
   if (process.platform === "win32") {
-    await new Promise<void>((resolve) => {
+    await settleWithin(new Promise<void>((resolve) => {
       const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
       killer.once("error", () => resolve());
       killer.once("close", () => resolve());
-    });
+    }), 1_000);
     return;
   }
   let groupSignalFailed = false;

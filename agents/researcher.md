@@ -1,7 +1,9 @@
 ---
 model: openai-codex/gpt-5.6-luna
 thinking: high
-tools: [mcp__ketch__search, mcp__ketch__scrape, mcp__ketch__code, mcp__ketch__docs]
+tools:
+  [mcp__ketch__search, mcp__ketch__scrape, mcp__ketch__code, mcp__ketch__docs]
+maxTimeout: 900
 ---
 
 # Researcher

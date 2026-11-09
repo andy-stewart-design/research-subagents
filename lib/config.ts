@@ -42,7 +42,10 @@ export function createResearchConfigSchema(registry: ProfileRegistry): ReturnTyp
       maxConcurrency: Type.Optional(
         Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
       ),
-      timeoutMs: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+      // 0 explicitly disables the global deadline; positive values are milliseconds.
+      timeoutMs: Type.Optional(
+        Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+      ),
       profiles: Type.Optional(Type.Object(profileProperties, { additionalProperties: false })),
     },
     { additionalProperties: false },
@@ -56,6 +59,7 @@ export type ProfileOverrides = Readonly<Static<typeof ProfileOverridesSchema>>;
 
 export interface ResearchConfig {
   readonly maxConcurrency: number;
+  /** Undefined and zero both mean unlimited; positive values are milliseconds. */
   readonly timeoutMs?: number;
   readonly profiles: Readonly<Partial<Record<string, ProfileOverrides>>>;
 }

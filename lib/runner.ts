@@ -1,7 +1,7 @@
 import { createDiagnosticHandoff } from "./report.ts";
 import { selectModel } from "./config.ts";
 import {
-  loadProfileDefaults, parseResearchInput, type ProfileRegistry, type ResearchInput,
+  DEFAULT_PROFILE_REGISTRY, loadProfileDefaults, parseResearchInput, type ProfileRegistry, type ResearchInput,
 } from "./profiles.ts";
 import {
   runResearchSession,
@@ -21,15 +21,21 @@ export interface ResearchRunStatus {
   readonly startedAt?: number;
   readonly finishedAt?: number;
   readonly elapsedMs?: number;
+  readonly timeoutMs?: number;
   readonly model?: string;
   readonly thinkingLevel?: string;
   readonly activity?: SessionOutcome["activity"];
 }
 
+export const DEFAULT_TIMEOUT_GRACE_MS = 30_000;
+export const MAX_TIMER_MS = 2_147_483_647;
+
 export interface ResearchRunnerOptions {
   readonly maxConcurrency: number;
-  /** Undefined means that no research deadline is allocated. */
+  /** Undefined and zero mean that no research deadline is allocated. */
   readonly timeoutMs?: number;
+  /** Injectable for deterministic lifecycle tests; production contract is 30 seconds. */
+  readonly timeoutGraceMs?: number;
   readonly services?: Partial<SessionServices>;
   readonly profileRegistry?: ProfileRegistry;
   readonly runSession?: typeof runResearchSession;
@@ -53,14 +59,14 @@ interface RunEntry {
   model?: string;
   thinkingLevel?: string;
   timer: ReturnType<typeof setTimeout> | undefined;
+  readonly deadlineController: AbortController;
+  readonly effectiveTimeoutMs?: number;
   timedOut: boolean;
   interruption: "cancelled" | "timed_out" | undefined;
   cancellationRequested: boolean;
   shutdownRequested: boolean;
   settled: boolean;
 }
-
-const MAX_TIMER_MS = 2_147_483_647;
 
 function initialActivity(): SessionOutcome["activity"] {
   return { assistantMessages: 0, toolCalls: 0 };
@@ -71,6 +77,34 @@ function snapshotActivity(activity: SessionOutcome["activity"]): SessionOutcome[
     ...activity,
     ...(activity.toolHistory ? { toolHistory: activity.toolHistory.map((call) => ({ ...call })) } : {}),
   };
+}
+
+function profileTimeoutMs(agent: string, registry?: ProfileRegistry): number | undefined {
+  const seconds = registry?.prompts[agent]?.maxTimeout;
+  return seconds === undefined ? undefined : seconds * 1000;
+}
+
+/** Resolve the ceiling and request without ever clamping an invalid request. */
+export function resolveResearchTimeout(
+  input: ResearchInput,
+  globalTimeoutMs: number | undefined,
+  registry?: ProfileRegistry,
+): number | undefined {
+  const agentTimeout = profileTimeoutMs(input.agent, registry ?? DEFAULT_PROFILE_REGISTRY);
+  // A declared agent value, including zero, overrides the global value.
+  const ceiling = agentTimeout !== undefined ? agentTimeout : globalTimeoutMs;
+  const requested = input.timeout_ms;
+  if (requested === undefined) return ceiling && ceiling > 0 ? ceiling : undefined;
+  if (requested === 0) {
+    if (ceiling !== undefined && ceiling > 0) {
+      throw new Error(`Invalid timeout_ms for ${input.agent}: 0 (unlimited) exceeds the finite maximum of ${ceiling} milliseconds.`);
+    }
+    return undefined;
+  }
+  if (ceiling !== undefined && ceiling > 0 && requested > ceiling) {
+    throw new Error(`Invalid timeout_ms for ${input.agent}: ${requested} milliseconds exceeds the maximum of ${ceiling} milliseconds.`);
+  }
+  return requested;
 }
 
 function selectedModel(
@@ -106,9 +140,18 @@ function cancelled(message: string, result?: SessionOutcome): SessionOutcome {
   };
 }
 
-function timedOut(message: string, result?: SessionOutcome): SessionOutcome {
+function timedOut(message: string, result?: SessionOutcome, timeoutMs?: number): SessionOutcome {
+  if (result?.status === "timed_out") {
+    return {
+      ...result,
+      status: "timed_out",
+      handoff: { ...result.handoff, isError: true },
+      ...(timeoutMs !== undefined && result.timeoutMs === undefined ? { timeoutMs } : {}),
+    };
+  }
   return {
     status: "timed_out",
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     handoff: createDiagnosticHandoff(interruptionMessage(message, result)),
     activity: result?.activity ?? initialActivity(),
     ...(result?.usage ? { usage: result.usage } : {}),
@@ -117,12 +160,13 @@ function timedOut(message: string, result?: SessionOutcome): SessionOutcome {
 
 /**
  * Owns the feature's shared child capacity. The runner deliberately has no normal deadline of
- * its own: a timer exists only when the user supplied timeoutMs. A slot is granted before that
- * timer is armed, so queue time never consumes the research deadline.
+ * its own: a timer exists only when the resolved global/agent/call policy is finite. A slot is
+ * granted before that timer is armed, so queue time never consumes the research deadline.
  */
 export class ResearchRunner {
   private readonly maxConcurrency: number;
   private readonly timeoutMs: number | undefined;
+  private readonly timeoutGraceMs: number;
   private readonly services: Partial<SessionServices> | undefined;
   private readonly profileRegistry: ProfileRegistry | undefined;
   private readonly runSession: typeof runResearchSession;
@@ -139,11 +183,16 @@ export class ResearchRunner {
       throw new Error("Research concurrency must be a positive integer.");
     }
     if (options.timeoutMs !== undefined &&
-      (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
-      throw new Error("Research timeout must be a positive finite number.");
+      (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) {
+      throw new Error("Research timeout must be zero or a nonnegative safe integer in milliseconds.");
+    }
+    if (options.timeoutGraceMs !== undefined &&
+      (!Number.isSafeInteger(options.timeoutGraceMs) || options.timeoutGraceMs < 0 || options.timeoutGraceMs > MAX_TIMER_MS)) {
+      throw new Error("Research timeout grace must be a nonnegative safe integer within the supported timer range.");
     }
     this.maxConcurrency = options.maxConcurrency;
     this.timeoutMs = options.timeoutMs;
+    this.timeoutGraceMs = options.timeoutGraceMs ?? DEFAULT_TIMEOUT_GRACE_MS;
     this.services = options.services;
     this.profileRegistry = options.profileRegistry;
     this.runSession = options.runSession ?? runResearchSession;
@@ -167,6 +216,8 @@ export class ResearchRunner {
       }
       activeRegistry = this.profileRegistry ?? options.profileRegistry;
       parsed = parseResearchInput(input, activeRegistry);
+      // Validate relational timeout policy before anything enters the queue.
+      resolveResearchTimeout(parsed, this.timeoutMs, activeRegistry);
     } catch (error) {
       return Promise.resolve({
         status: "failed",
@@ -186,15 +237,20 @@ export class ResearchRunner {
     const display = selectedModel(parsed, options, activeRegistry);
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
+      const effectiveTimeoutMs = resolveResearchTimeout(parsed, this.timeoutMs, activeRegistry);
       const entry: RunEntry = {
         id: this.nextId++, input: parsed, options, resolve, queuedAt, controller,
         profileRegistry: activeRegistry, onStatus, ...display,
-        state: "queued", completion: Promise.resolve(), timer: undefined, timedOut: false,
+        state: "queued", completion: Promise.resolve(), timer: undefined,
+        deadlineController: new AbortController(),
+        ...(effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs } : {}),
+        timedOut: false,
         interruption: undefined, cancellationRequested: false, shutdownRequested: false, settled: false,
       };
       const onCallerAbort = () => {
         entry.cancellationRequested = true;
-        if (entry.interruption === undefined) entry.interruption = "cancelled";
+        // Explicit parent cancellation during timeout grace suppresses the incomplete handoff.
+        entry.interruption = "cancelled";
         this.clearTimer(entry);
         if (entry.state === "queued") this.cancelQueued(entry, "Research cancelled while queued; no child was started.");
         else controller.abort(options.signal?.reason);
@@ -202,6 +258,19 @@ export class ResearchRunner {
       if (options.signal) {
         options.signal.addEventListener("abort", onCallerAbort, { once: true });
         entry.removeCallerAbort = () => options.signal?.removeEventListener("abort", onCallerAbort);
+        // Abort can be delivered between the initial check above and listener
+        // registration. Re-check synchronously before publishing this entry so
+        // a pre-aborted caller can never be queued or started.
+        if (options.signal.aborted) {
+          onCallerAbort();
+          return;
+        }
+      }
+      // Keep the queue free of entries settled by the registration race (and of
+      // any entry whose controller was synchronously aborted by its callback).
+      if (entry.settled || entry.controller.signal.aborted) {
+        this.cancelQueued(entry, "Research cancelled while queued; no child was started.");
+        return;
       }
       this.queue.push(entry);
       this.emit(entry, "queued");
@@ -221,7 +290,7 @@ export class ResearchRunner {
       for (const entry of this.active) {
         entry.shutdownRequested = true;
         entry.cancellationRequested = true;
-        if (entry.interruption === undefined) entry.interruption = "cancelled";
+        entry.interruption = "cancelled";
         this.clearTimer(entry);
         entry.controller.abort();
       }
@@ -254,13 +323,17 @@ export class ResearchRunner {
   }
 
   private async execute(entry: RunEntry): Promise<void> {
-    if (this.timeoutMs !== undefined) this.armTimeout(entry);
+    if (entry.effectiveTimeoutMs !== undefined) this.armTimeout(entry);
     let result: SessionOutcome;
     try {
       const childOptions: ResearchSessionOptions = {
         ...entry.options,
         ...(entry.profileRegistry ? { profileRegistry: entry.profileRegistry } : {}),
         signal: entry.controller.signal,
+        ...(entry.options.signal ? { cancellationSignal: entry.options.signal } : {}),
+        ...(entry.effectiveTimeoutMs !== undefined ? { timeoutMs: entry.effectiveTimeoutMs } : {}),
+        deadlineSignal: entry.deadlineController.signal,
+        timeoutGraceMs: this.timeoutGraceMs,
         ...(entry.startedAt !== undefined ? { startedAt: entry.startedAt } : {}),
         now: this.now,
         onActivity: (activity) => {
@@ -281,18 +354,19 @@ export class ResearchRunner {
       entry.removeCallerAbort?.();
     }
 
-    if (entry.interruption === "timed_out") {
-      result = timedOut("Research timed out; no completed report is claimed.", result);
-    } else if (entry.interruption === "cancelled" || entry.cancellationRequested || entry.shutdownRequested || entry.controller.signal.aborted) {
+    if (entry.interruption === "cancelled" || entry.cancellationRequested || entry.shutdownRequested) {
       result = cancelled(entry.shutdownRequested
         ? "Research cancelled because the parent session is shutting down."
         : "Research cancelled; no completed report is claimed.", result);
+    } else if (entry.interruption === "timed_out" || entry.controller.signal.aborted) {
+      result = timedOut("Research timed out; no completed report is claimed.", result, entry.effectiveTimeoutMs);
     }
     this.finish(entry, result);
   }
 
   private armTimeout(entry: RunEntry): void {
-    const timeoutMs = this.timeoutMs!;
+    const timeoutMs = entry.effectiveTimeoutMs;
+    if (timeoutMs === undefined || timeoutMs <= 0) return;
     const schedule = () => {
       const elapsed = this.now() - entry.startedAt!;
       const remaining = timeoutMs - elapsed;
@@ -300,7 +374,11 @@ export class ResearchRunner {
         if (entry.interruption !== undefined) return;
         entry.timedOut = true;
         entry.interruption = "timed_out";
-        entry.controller.abort(new Error("Research safety timeout elapsed."));
+        const reason = { researchTimeout: true, message: "Research safety timeout elapsed." };
+        // deadlineSignal is the explicit soft-interruption channel. The tagged abort on the
+        // compatibility signal lets older injected runners wake up without making this a cancel.
+        entry.deadlineController.abort(reason);
+        entry.controller.abort(reason);
         return;
       }
       entry.timer = setTimeout(schedule, Math.min(remaining, MAX_TIMER_MS));
@@ -348,6 +426,7 @@ export class ResearchRunner {
       ...(entry.model !== undefined ? { model: entry.model } : {}),
       ...(entry.thinkingLevel !== undefined ? { thinkingLevel: entry.thinkingLevel } : {}),
       ...(startedAt !== undefined ? { startedAt, elapsedMs: now - startedAt } : {}),
+      ...(entry.effectiveTimeoutMs !== undefined ? { timeoutMs: entry.effectiveTimeoutMs } : {}),
       ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
         ? { finishedAt: now } : {}),
       ...(currentActivity ? { activity: snapshotActivity(currentActivity) } : {}),

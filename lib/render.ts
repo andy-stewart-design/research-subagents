@@ -15,6 +15,7 @@ export interface ResearchToolDetails {
   readonly task: string;
   readonly activity?: SessionActivity;
   readonly elapsedMs?: number;
+  readonly timeoutMs?: number;
   readonly model?: string;
   readonly thinkingLevel?: string;
   readonly truncated?: boolean;
