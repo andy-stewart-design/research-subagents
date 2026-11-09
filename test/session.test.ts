@@ -12,13 +12,17 @@ import type { ProfileName, ProfilePrompt } from "../lib/profiles.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
 import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
 import { assistant, completedStream, parent, unitRuntime, usage } from "./fixtures/session-fixtures.ts";
+import { TEST_PROFILE_REGISTRY } from "./fixtures/profile-fixtures.ts";
 
 async function options(t: TestContext): Promise<ResearchSessionOptions> {
   const root = await fs.mkdtemp(join(tmpdir(), "research-session-unit-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const cwd = join(root, "project"), agentDir = join(root, "agent");
   await fs.mkdir(cwd); await fs.mkdir(agentDir);
-  return { cwd, workspaceDir: cwd, agentDir, parent, config: parseConfig({}) };
+  return {
+    cwd, workspaceDir: cwd, agentDir, parent,
+    config: parseConfig({}, TEST_PROFILE_REGISTRY), profileRegistry: TEST_PROFILE_REGISTRY,
+  };
 }
 
 interface Script {

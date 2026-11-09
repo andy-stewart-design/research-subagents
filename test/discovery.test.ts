@@ -24,7 +24,18 @@ test("a markdown agent definition supplies the schema, config, model, prompt, an
   writeFileSync(join(root, "README.md"), "ignored");
   writeFileSync(join(root, "notes.txt"), "ignored");
   writeFileSync(join(root, ".hidden.md"), "ignored");
-  writeFileSync(join(root, "reviewer.md"), `---\nmodel: fixture/reviewer\nthinking: low\nmaxTimeout: 30\ntools: [read, grep]\ndescription: Reviews local changes without editing.\n---\n# Reviewer\nInspect the requested changes.`);
+  writeFileSync(join(root, "reviewer.md"), `---
+model: fixture/reviewer
+thinking: low
+maxTimeout: 30
+tools:
+  # The discovery path must preserve ordinary YAML formatting.
+  - "read"
+  - grep
+description: Reviews local changes without editing.
+---
+# Reviewer
+Inspect the requested changes.`);
 
   const registry = discoverProfiles(root);
   assert.deepEqual(registry.names, ["reviewer"]);

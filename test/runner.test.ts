@@ -5,13 +5,15 @@ import { createDiagnosticHandoff } from "../lib/report.ts";
 import { ResearchRunner, type ResearchRunStatus } from "../lib/runner.ts";
 import type { ResearchSessionOptions, SessionOutcome } from "../lib/session.ts";
 import { usage } from "./fixtures/session-fixtures.ts";
+import { TEST_PROFILE_REGISTRY } from "./fixtures/profile-fixtures.ts";
 
 const baseOptions: ResearchSessionOptions = {
   cwd: "/tmp/research-runner-project",
   workspaceDir: "/tmp/research-runner-project",
   agentDir: "/tmp/research-runner-agent",
   parent: { model: { provider: "fixture", id: "model" } },
-  config: parseConfig({}),
+  config: parseConfig({}, TEST_PROFILE_REGISTRY),
+  profileRegistry: TEST_PROFILE_REGISTRY,
 };
 
 const completed = (task: string): SessionOutcome => ({
@@ -76,6 +78,20 @@ test("no timeout is allocated by default and long completion is successful", asy
   const result = await runner.run({ agent: "scout", task: "unlimited" }, options("unlimited"));
   assert.equal(result.status, "completed");
   assert.equal(aborted, false);
+});
+
+test("configured timeout uses the isolated profile policy rather than a user's agent ceiling", async () => {
+  const runner = new ResearchRunner({
+    maxConcurrency: 1,
+    timeoutMs: 20,
+    runSession: async (_input, childOptions) => {
+      await waitFor(childOptions.signal!);
+      return { status: "cancelled", handoff: createDiagnosticHandoff("aborted"), activity: { assistantMessages: 0, toolCalls: 0 } };
+    },
+  });
+  const result = await runner.run({ agent: "researcher", task: "bounded fixture timeout" }, options("bounded fixture timeout"));
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.timeoutMs, 20);
 });
 
 test("abort during listener registration cannot queue or start a child", async () => {
@@ -195,7 +211,7 @@ test("status and activity observers are bounded side channels and cannot break e
   const result = await runner.run({ agent: "scout", task: "observed" }, options("observed"));
   assert.equal(result.status, "completed");
   assert.deepEqual(statuses.map((status) => status.state), ["queued", "running", "running", "completed"]);
-  assert.equal(statuses[0]?.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(statuses[0]?.model, "fixture/model");
   assert.equal(statuses[0]?.thinkingLevel, "high");
   assert.equal(statuses[2]?.activity?.latestTool, "read");
 });

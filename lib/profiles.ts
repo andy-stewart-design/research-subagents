@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, type Dirent } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { isAlias, isMap, isScalar, isSeq, parseDocument, type Node, type ParsedNode } from "yaml";
 import { Type, type TSchema } from "typebox";
 import { KETCH_TOOLS } from "./ketch.ts";
 
@@ -155,110 +156,163 @@ function defaultToolsFor(name: string): readonly string[] {
   return fallbackFor(name)?.tools ?? [];
 }
 
-function stripInlineComment(value: string): string {
-  let quote: string | undefined;
-  let escaped = false;
-  for (let index = 0; index < value.length; index++) {
-    const character = value[index]!;
-    if (quote === "\"" && escaped) { escaped = false; continue; }
-    if (quote === "\"" && character === "\\") { escaped = true; continue; }
-    if (quote) {
-      if (character === quote) quote = undefined;
-    } else if (character === "\"" || character === "'") {
-      quote = character;
-    } else if (character === "#" && (index === 0 || /\s/u.test(value[index - 1]!))) {
-      return value.slice(0, index).trim();
+const FRONTMATTER_KEYS = new Set(["model", "thinking", "tools", "description", "maxTimeout"]);
+
+function yamlError(name: string, message: string): Error {
+  const detail = message.replace(/\s+/gu, " ").trim().replace(/[.]$/u, "");
+  return new Error(`Invalid ${name} prompt frontmatter: ${detail || "invalid YAML"}.`);
+}
+
+function toolsError(name: string, message: string): Error {
+  const detail = message.replace(/\s+/gu, " ").trim().replace(/[.]$/u, "");
+  return new Error(`Invalid ${name} prompt tools: ${detail || "invalid YAML"}.`);
+}
+
+function asToolsError(name: string, error: unknown): Error {
+  const message = error instanceof Error ? error.message : "invalid YAML";
+  const prefix = `Invalid ${name} prompt frontmatter:`;
+  return message.startsWith(prefix) ? new Error(message.replace(prefix, `Invalid ${name} prompt tools:`)) : toolsError(name, message);
+}
+
+/** Reject YAML features that could execute, expand, or mutate data outside this small schema. */
+function assertSafeYamlNode(name: string, node: Node | null, path: string): void {
+  if (node === null) throw yamlError(name, `null value at ${path} is not allowed`);
+  if (isAlias(node)) throw yamlError(name, `aliases are not allowed at ${path}`);
+  if (node.tag !== undefined) throw yamlError(name, `explicit YAML tags are not allowed at ${path}`);
+  if (("anchor" in node) && node.anchor !== undefined) throw yamlError(name, `anchors are not allowed at ${path}`);
+  if (isMap<ParsedNode, ParsedNode | null>(node)) {
+    for (const pair of node.items) {
+      assertSafeYamlNode(name, pair.key, `${path} key`);
+      assertSafeYamlNode(name, pair.value, path);
     }
+  } else if (isSeq<ParsedNode>(node)) {
+    for (const [index, item] of node.items.entries()) assertSafeYamlNode(name, item, `${path}[${index}]`);
   }
-  return value.trim();
+}
+
+function yamlValue(name: string, node: Node | null, path: string): unknown {
+  assertSafeYamlNode(name, node, path);
+  if (node === null) return null;
+  if (isScalar(node)) return node.value;
+  if (isSeq<ParsedNode>(node)) return node.items.map((item, index) => yamlValue(name, item, `${path}[${index}]`));
+  if (isMap<ParsedNode, ParsedNode | null>(node)) {
+    const value: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const pair of node.items) {
+      if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
+        throw yamlError(name, `mapping keys at ${path} must be strings`);
+      }
+      value[pair.key.value] = yamlValue(name, pair.value, `${path}.${pair.key.value}`);
+    }
+    return value;
+  }
+  throw yamlError(name, `unsupported YAML value at ${path}`);
 }
 
 function splitToolList(value: string): string[] {
-  let source = value.trim();
-  const array = source.startsWith("[");
-  if (array !== source.endsWith("]")) throw new Error("expected an inline YAML array or comma-separated list");
-  if (array) source = source.slice(1, -1).trim();
-  if (!source) return [];
-
-  const values: string[] = [];
-  let current = "";
-  let quote: string | undefined;
-  for (let index = 0; index < source.length; index++) {
-    const character = source[index]!;
-    if (quote) {
-      if (quote === "\"" && character === "\\" && index + 1 < source.length) current += source[++index]!;
-      else if (character === quote) quote = undefined;
-      else current += character;
-    } else if (character === "\"" || character === "'") quote = character;
-    else if (character === ",") { values.push(current.trim()); current = ""; }
-    else current += character;
-  }
-  if (quote) throw new Error("unterminated quote");
-  values.push(current.trim());
-  return values.map((tool) => {
-    if (!tool) throw new Error("tool names must not be empty");
-    return tool;
-  });
+  const tools = value.split(",").map((tool) => tool.trim());
+  if (!value.trim() || tools.some((tool) => !tool)) throw new Error("expected [] or a comma-separated list");
+  return tools;
 }
 
-function unwrapScalar(value: string): string {
-  const quote = value[0];
-  if (quote !== "\"" && quote !== "'") return value;
-  let escaped = false;
-  for (let index = 1; index < value.length; index++) {
-    const character = value[index]!;
-    if (quote === "\"" && escaped) { escaped = false; continue; }
-    if (quote === "\"" && character === "\\") { escaped = true; continue; }
-    if (character === quote) return index === value.length - 1 ? value.slice(1, -1) : value;
-  }
-  return value;
-}
-
-function parseTools(name: string, raw: string | undefined, defaults: readonly string[]): readonly string[] {
+function parseTools(name: string, raw: unknown, defaults: readonly string[]): readonly string[] {
   if (raw === undefined) return defaults;
-  const value = stripInlineComment(raw);
-  if (!value) throw new Error(`Invalid ${name} prompt tools: expected [] or a comma-separated list.`);
-  const unwrapped = unwrapScalar(value);
-  if (!unwrapped.trim() && !/^\[\s*\]$/u.test(value)) {
+  let tools: unknown[];
+  if (typeof raw === "string") {
+    try { tools = splitToolList(raw); }
+    catch (error) { throw toolsError(name, error instanceof Error ? error.message : "invalid list"); }
+  } else if (Array.isArray(raw)) {
+    tools = raw;
+  } else {
+    throw new Error(`Invalid ${name} prompt tools: expected a YAML sequence or comma-separated string.`);
+  }
+  if (!tools.length && !Array.isArray(raw)) {
     throw new Error(`Invalid ${name} prompt tools: expected [] or a comma-separated list.`);
   }
-  let tools: string[];
-  try { tools = splitToolList(unwrapped); }
-  catch (error) { throw new Error(`Invalid ${name} prompt tools: ${error instanceof Error ? error.message : "invalid list"}.`); }
   const seen = new Set<string>();
+  const names: string[] = [];
   for (const tool of tools) {
+    if (typeof tool !== "string" || !tool.trim()) {
+      throw new Error(`Invalid ${name} prompt tools: tool names must be strings.`);
+    }
     if (!(SUPPORTED_TOOLS as readonly string[]).includes(tool)) throw new Error(`Invalid ${name} prompt tool "${tool}": unsupported tool name.`);
     if (seen.has(tool)) throw new Error(`Invalid ${name} prompt tools: duplicate tool "${tool}".`);
     seen.add(tool);
+    names.push(tool);
   }
-  return Object.freeze(tools);
+  return Object.freeze(names);
 }
 
 interface ParsedFrontmatter {
-  readonly metadata: Readonly<Record<string, string>>;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly nodes: Readonly<Record<string, Node | null>>;
   readonly text: string;
 }
 
 function parseFrontmatter(name: string, source: string): ParsedFrontmatter {
   const match = /^(?:---\r?\n([\s\S]*?)\r?\n---\r?\n?)([\s\S]*)$/u.exec(source);
-  const metadata: Record<string, string> = {};
   const text = match ? match[2]! : source;
-  if (match) {
-    for (const line of match[1]!.split(/\r?\n/u)) {
-      if (!line.trim()) continue;
-      const separator = line.indexOf(":");
-      if (separator <= 0) throw new Error(`Invalid ${name} prompt frontmatter: expected key: value.`);
-      const key = line.slice(0, separator).trim();
-      const value = stripInlineComment(line.slice(separator + 1));
-      if (!value && key !== "tools") throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
-      if (!["model", "thinking", "tools", "description", "maxTimeout"].includes(key)) {
-        throw new Error(`Invalid ${name} prompt frontmatter: unsupported or empty ${key}.`);
+  if (!match) return {
+    metadata: Object.freeze(Object.create(null) as Record<string, unknown>),
+    nodes: Object.freeze(Object.create(null) as Record<string, Node | null>),
+    text,
+  };
+
+  let document;
+  try {
+    document = parseDocument<ParsedNode>(match[1]!, {
+      version: "1.2",
+      schema: "core",
+      customTags: [],
+      resolveKnownTags: false,
+      merge: false,
+      uniqueKeys: false,
+      stringKeys: true,
+      strict: true,
+    });
+  } catch (error) {
+    const prefix = /(?:^|\n)\s*tools\s*:/u.test(match[1]!) ? `Invalid ${name} prompt tools` : `Invalid ${name} prompt frontmatter`;
+    const detail = error instanceof Error ? error.message.replace(/\s+/gu, " ").trim().replace(/[.]$/u, "") : "invalid YAML";
+    throw new Error(`${prefix}: ${detail}.`);
+  }
+  if (isMap<ParsedNode, ParsedNode | null>(document.contents)) {
+    const seen = new Set<string>();
+    for (const pair of document.contents.items) {
+      if (isScalar(pair.key) && typeof pair.key.value === "string") {
+        if (seen.has(pair.key.value)) throw yamlError(name, `duplicate ${pair.key.value} frontmatter key`);
+        seen.add(pair.key.value);
       }
-      if (Object.hasOwn(metadata, key)) throw new Error(`Invalid ${name} prompt frontmatter: duplicate ${key}.`);
-      metadata[key] = value;
     }
   }
-  return { metadata, text };
+  if (document.errors.length) {
+    const error = document.errors[0]!;
+    if (/(?:^|\n)\s*tools\s*:/u.test(match[1]!)) throw asToolsError(name, error);
+    throw yamlError(name, error.message);
+  }
+  if (document.warnings.length) throw yamlError(name, document.warnings[0]!.message);
+  if (!isMap<ParsedNode, ParsedNode | null>(document.contents)) throw yamlError(name, "frontmatter root must be a YAML mapping");
+  assertSafeYamlNode(name, document.contents, "frontmatter");
+
+  const metadata: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const nodes: Record<string, Node | null> = Object.create(null) as Record<string, Node | null>;
+  for (const pair of document.contents.items) {
+    if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
+      throw yamlError(name, "frontmatter keys must be strings");
+    }
+    const key = pair.key.value;
+    if (!FRONTMATTER_KEYS.has(key)) throw yamlError(name, `unsupported frontmatter key ${JSON.stringify(key)}`);
+    if (Object.hasOwn(metadata, key)) throw yamlError(name, `duplicate ${key} frontmatter key`);
+    if (key === "tools" && isSeq<ParsedNode>(pair.value) && pair.value.flow && pair.value.range) {
+      const fragment = match[1]!.slice(pair.value.range[0], pair.value.range[2]);
+      if (/,\s*\]$/u.test(fragment)) throw new Error(`Invalid ${name} prompt tools: trailing commas are not allowed.`);
+    }
+    try { metadata[key] = yamlValue(name, pair.value, key); }
+    catch (error) {
+      if (key === "tools") throw asToolsError(name, error);
+      throw error;
+    }
+    nodes[key] = pair.value;
+  }
+  return { metadata: Object.freeze(metadata), nodes: Object.freeze(nodes), text };
 }
 
 export function parseProfilePrompt(
@@ -266,23 +320,34 @@ export function parseProfilePrompt(
   source: string,
   fallbackTools: readonly string[] = defaultToolsFor(name),
 ): ProfilePrompt {
-  const { metadata, text } = parseFrontmatter(name, source);
+  const { metadata, nodes, text } = parseFrontmatter(name, source);
   if (!text.trim()) throw new Error(`Bundled ${name} prompt is empty.`);
-  const model = metadata.model === undefined ? undefined : unwrapScalar(metadata.model);
-  const thinking = metadata.thinking === undefined ? undefined : unwrapScalar(metadata.thinking);
-  const description = metadata.description === undefined ? undefined : unwrapScalar(metadata.description).trim();
-  const rawMaxTimeout = metadata.maxTimeout === undefined ? undefined : unwrapScalar(metadata.maxTimeout).trim();
+  const model = metadata.model;
+  const thinking = metadata.thinking;
+  const description = metadata.description;
+  const rawMaxTimeout = metadata.maxTimeout;
+  if (model !== undefined && typeof model !== "string") throw new Error(`Invalid ${name} prompt model: expected a string.`);
+  if (thinking !== undefined && typeof thinking !== "string") throw new Error(`Invalid ${name} prompt thinking: expected a string.`);
+  if (description !== undefined && typeof description !== "string") throw new Error(`Invalid ${name} prompt description: expected a string.`);
   let maxTimeout: number | undefined;
   if (rawMaxTimeout !== undefined) {
-    if (!/^\d+$/u.test(rawMaxTimeout)) {
+    const node = nodes.maxTimeout;
+    const sourceValue = isScalar(node) ? node.source : undefined;
+    const plainInteger = typeof sourceValue === "string" && /^(?:0|[1-9]\d*)$/u.test(sourceValue);
+    const quotedInteger = typeof rawMaxTimeout === "string" && /^\d+$/u.test(rawMaxTimeout)
+      && isScalar(node) && node.type !== "PLAIN";
+    if (typeof rawMaxTimeout === "number" && plainInteger && Number.isSafeInteger(rawMaxTimeout) && rawMaxTimeout >= 0) {
+      maxTimeout = rawMaxTimeout;
+    } else if (quotedInteger) {
+      maxTimeout = Number(rawMaxTimeout);
+    } else {
       throw new Error(`Invalid ${name} prompt maxTimeout: expected a nonnegative integer number of seconds.`);
     }
-    maxTimeout = Number(rawMaxTimeout);
-    if (!Number.isSafeInteger(maxTimeout) || maxTimeout > MAX_TIMEOUT_SECONDS) {
-      throw new Error(`Invalid ${name} prompt maxTimeout: seconds exceed the safe timeout range.`);
-    }
   }
-  if (description !== undefined && !description) throw new Error(`Invalid ${name} prompt description: expected non-empty text.`);
+  if (maxTimeout !== undefined && maxTimeout > MAX_TIMEOUT_SECONDS) {
+    throw new Error(`Invalid ${name} prompt maxTimeout: seconds exceed the safe timeout range.`);
+  }
+  if (description !== undefined && !description.trim()) throw new Error(`Invalid ${name} prompt description: expected non-empty text.`);
   if (model !== undefined && !MODEL_PATTERN.test(model)) throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
   if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ThinkingLevel)) throw new Error(`Invalid ${name} prompt thinking level: ${thinking}.`);
   return {
@@ -293,7 +358,7 @@ export function parseProfilePrompt(
       ...(model !== undefined ? { model } : {}),
       ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
     }),
-    ...(description !== undefined ? { description } : {}),
+    ...(description !== undefined ? { description: description.trim() } : {}),
   };
 }
 

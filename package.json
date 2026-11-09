@@ -20,6 +20,9 @@
     "test:integration": "node --import tsx --test test/integration/*.test.ts",
     "check": "pnpm run typecheck && pnpm test && pnpm run test:integration"
   },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",

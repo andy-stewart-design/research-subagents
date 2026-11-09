@@ -160,7 +160,16 @@ Defaults are concurrency **2** and **no research deadline**. `timeoutMs` is abse
 
 When a deadline expires, the result is irreversibly `timed_out`/incomplete and is returned as an error. The child gets a fixed 30-second grace window: interruption is requested immediately, the original operation must settle before one tool-free same-session handoff is attempted, all callable tools are disabled first, and the handoff is forcibly persisted (including short summaries) before disposal. A stalled abort, startup, summary, persistence, or grace expiry returns a diagnostic naming the last active tool and uncertainty about late work. Explicit parent cancellation skips this handoff and interrupts promptly. Callers should allow at least the work deadline plus 30 seconds of grace and bounded cleanup before applying an outer request timeout. Cleanup is bounded; Pi SDK disposal is not treated as proof that arbitrary in-process tools stopped, although owned Ketch process termination is retained as a fallback.
 
-Agent files carry the profile source of truth in markdown frontmatter. `model` and `thinking` set defaults; `description` documents the public enum; `tools` is an optional exact allowlist; `maxTimeout` is an optional nonnegative integer timeout ceiling in seconds (zero means unlimited). Existing bundled profiles retain their historical omitted-tools defaults, while a new profile without `tools` receives no tools. `tools: []` also intentionally exposes no tools. Use either an inline YAML array or a comma-separated scalar, for example `tools: [read, grep, bash]` or `tools: read, grep, bash`. Supported names are the native `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus `mcp__ketch__search`, `mcp__ketch__scrape`, `mcp__ketch__code`, and `mcp__ketch__docs`; unknown names, duplicates, malformed lists, and unsupported values fail before the child task starts.
+Agent files carry the profile source of truth in ordinary YAML markdown frontmatter. `model` and `thinking` set string defaults; `description` documents the public enum; `tools` is an optional exact allowlist; `maxTimeout` is an optional nonnegative integer timeout ceiling in seconds (zero means unlimited). Existing bundled profiles retain their historical omitted-tools defaults, while a new profile without `tools` receives no tools. `tools: []` also intentionally exposes no tools. YAML flow arrays may be inline or wrapped across lines, and block sequences are supported, for example `tools: [read, grep, bash]`, a multiline flow array, or:
+
+```yaml
+tools:
+  - read
+  - grep
+  - bash
+```
+
+The legacy comma-separated scalar form (`tools: read, grep, bash`) remains supported. Supported names are the native `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus `mcp__ketch__search`, `mcp__ketch__scrape`, `mcp__ketch__code`, and `mcp__ketch__docs`; unknown names, duplicates, malformed lists, and unsupported values fail before the child task starts.
 
 For example, create `agents/reviewer.md`:
 

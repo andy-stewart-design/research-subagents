@@ -11,6 +11,7 @@ import { ResearchRunner } from "../../lib/runner.ts";
 import { createOwnedKetchTransport } from "../../lib/ketch.ts";
 import { createChildModelRuntime, runResearchSession, type ResearchSessionOptions, type SessionServices } from "../../lib/session.ts";
 import { assistant, completedStream } from "../fixtures/session-fixtures.ts";
+import { TEST_PROFILE_REGISTRY } from "../fixtures/profile-fixtures.ts";
 
 const fixtureServer = fileURLToPath(new URL("../fixtures/fake-mcp-server.mjs", import.meta.url));
 const provider = "lifecycle-fixture";
@@ -77,7 +78,8 @@ async function setup(t: TestContext, mode: "unresponsive" | "hang-call") {
   const options: ResearchSessionOptions = {
     cwd, workspaceDir: cwd, agentDir,
     parent: { model: { provider, id: modelId } },
-    config: parseConfig({ profiles: { researcher: { model: `${provider}/${modelId}`, thinking: "max" } } }),
+    config: parseConfig({ profiles: { researcher: { model: `${provider}/${modelId}`, thinking: "max" } } }, TEST_PROFILE_REGISTRY),
+    profileRegistry: TEST_PROFILE_REGISTRY,
   };
   return { root, options, services, pids, get requests() { return requests; } };
 }
@@ -137,7 +139,10 @@ test("an unresponsive MCP startup fails closed and native teardown exits the own
 
 test("a configured timeout aborts a running native tool, closes MCP, and leaves no orphan process", { timeout: 10_000 }, async (t) => {
   const fixture = await setup(t, "hang-call");
-  const runner = new ResearchRunner({ maxConcurrency: 1, timeoutMs: 1500, services: fixture.services });
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, timeoutMs: 1500, services: fixture.services,
+    profileRegistry: TEST_PROFILE_REGISTRY,
+  });
   const result = await runner.run({ agent: "researcher", task: "running timeout" }, fixture.options);
   assert.equal(result.status, "timed_out");
   assert.match(result.handoff.text, /timed out/);

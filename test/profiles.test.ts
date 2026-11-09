@@ -105,6 +105,44 @@ test("profile tools frontmatter supports defaults, inline arrays, comma lists, a
   assert.throws(() => parseProfilePrompt("worker", "---\ntools: read\nmodel: fixture/model\ntools: bash\n---\nbody"), /duplicate tools/);
 });
 
+test("YAML frontmatter supports multiline tools and rejects unsafe or invalid schema values", () => {
+  assert.deepEqual(parseProfilePrompt("researcher", `---
+tools:
+  [mcp__ketch__search,
+   "mcp__ketch__scrape", # keep this formatted
+   'mcp__ketch__code',
+   mcp__ketch__docs]
+---
+body`).tools, [
+    "mcp__ketch__search", "mcp__ketch__scrape", "mcp__ketch__code", "mcp__ketch__docs",
+  ]);
+  assert.deepEqual(parseProfilePrompt("worker", `---
+tools:
+  # comments are allowed in block sequences
+  - "read"
+  - 'grep' # quoted tool names remain strings
+---
+body`).tools, ["read", "grep"]);
+  assert.equal(parseProfilePrompt("worker", `---
+maxTimeout: "30"
+---
+body`).maxTimeout, 30);
+
+  for (const source of [
+    "---\ntools: [read, read]\n---\nbody",
+    "---\nunknown: value\n---\nbody",
+    "---\n- tools\n---\nbody",
+    "---\nmodel: false\n---\nbody",
+    "---\nthinking: 1\n---\nbody",
+    "---\ntools: [read, false]\n---\nbody",
+    "---\ntools: &allowed [read]\n---\nbody",
+    "---\ntools: !!str read\n---\nbody",
+    "---\nmaxTimeout: 1.5\n---\nbody",
+    "---\nmaxTimeout: -1\n---\nbody",
+  ]) assert.throws(() => parseProfilePrompt("worker", source), /Invalid worker prompt (?:frontmatter|tools|maxTimeout|model|thinking)/);
+  assert.throws(() => parseProfilePrompt("worker", "---\ntools: [read]\nmodel: fixture/model\ntools: [bash]\n---\nbody"), /duplicate tools/);
+});
+
 test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {
   assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
   assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
