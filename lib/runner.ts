@@ -6,22 +6,34 @@ import {
 import {
   runResearchSession,
   type ResearchSessionOptions,
+  type ResearchTimeoutMetadata,
+  type ResearchTimeoutSource,
   type SessionOutcome,
   type SessionServices,
 } from "./session.ts";
 
 export type ResearchRunState = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
+/** A live running phase; terminal statuses deliberately carry no phase. */
+export type ResearchRunPhase = "preparing_timeout_handoff";
 
 export interface ResearchRunStatus {
   readonly id: number;
   readonly state: ResearchRunState;
+  readonly phase?: ResearchRunPhase;
   readonly agent?: ResearchInput["agent"];
   readonly task?: string;
   readonly queuedAt: number;
   readonly startedAt?: number;
   readonly finishedAt?: number;
   readonly elapsedMs?: number;
+  /** Backward-compatible finite effective deadline; absent when unlimited. */
   readonly timeoutMs?: number;
+  readonly requestedTimeoutMs?: number;
+  /** Effective deadline in milliseconds; zero means unlimited. */
+  readonly effectiveTimeoutMs?: number;
+  readonly timeoutSource?: ResearchTimeoutSource;
+  /** Effective configured ceiling; zero means unlimited. */
+  readonly maxTimeoutMs?: number;
   readonly model?: string;
   readonly thinkingLevel?: string;
   readonly activity?: SessionOutcome["activity"];
@@ -32,7 +44,7 @@ export const MAX_TIMER_MS = 2_147_483_647;
 
 export interface ResearchRunnerOptions {
   readonly maxConcurrency: number;
-  /** Undefined and zero mean that no research deadline is allocated. */
+  /** Global timeout policy in milliseconds; undefined/zero are unlimited unless an agent maxTimeout overrides it. */
   readonly timeoutMs?: number;
   /** Injectable for deterministic lifecycle tests; production contract is 30 seconds. */
   readonly timeoutGraceMs?: number;
@@ -56,11 +68,14 @@ interface RunEntry {
   completion: Promise<void>;
   state: "queued" | "running";
   startedAt?: number;
+  /** Work-clock elapsed at the deadline; excludes timeout grace/handoff time. */
+  workElapsedMs?: number;
+  phase?: ResearchRunPhase | undefined;
   model?: string;
   thinkingLevel?: string;
   timer: ReturnType<typeof setTimeout> | undefined;
   readonly deadlineController: AbortController;
-  readonly effectiveTimeoutMs?: number;
+  readonly timeout: ResearchTimeoutMetadata;
   timedOut: boolean;
   interruption: "cancelled" | "timed_out" | undefined;
   cancellationRequested: boolean;
@@ -79,32 +94,45 @@ function snapshotActivity(activity: SessionOutcome["activity"]): SessionOutcome[
   };
 }
 
-function profileTimeoutMs(agent: string, registry?: ProfileRegistry): number | undefined {
-  const seconds = registry?.prompts[agent]?.maxTimeout;
+function profileTimeoutMs(agent: string, registry: ProfileRegistry): number | undefined {
+  const seconds = registry.prompts[agent]?.maxTimeout;
   return seconds === undefined ? undefined : seconds * 1000;
 }
 
 /** Resolve the ceiling and request without ever clamping an invalid request. */
+export function resolveResearchTimeoutPolicy(
+  input: ResearchInput,
+  globalTimeoutMs: number | undefined,
+  registry?: ProfileRegistry,
+): ResearchTimeoutMetadata {
+  const activeRegistry = registry ?? DEFAULT_PROFILE_REGISTRY;
+  const agentTimeout = profileTimeoutMs(input.agent, activeRegistry);
+  // A declared agent value, including zero, overrides the global value.
+  const ceiling = agentTimeout !== undefined ? agentTimeout : globalTimeoutMs;
+  const timeoutSource: ResearchTimeoutSource = agentTimeout !== undefined
+    ? "agent"
+    : globalTimeoutMs !== undefined ? "global" : "default";
+  const requested = input.timeout_ms;
+  if (requested !== undefined && requested > 0 && ceiling !== undefined && ceiling > 0 && requested > ceiling) {
+    throw new Error(`Invalid timeout_ms for ${input.agent}: ${requested} milliseconds exceeds the maximum of ${ceiling} milliseconds.`);
+  }
+  const callerImposed = requested !== undefined && requested > 0;
+  const effectiveTimeoutMs = callerImposed ? requested : ceiling ?? 0;
+  return {
+    ...(requested !== undefined ? { requestedTimeoutMs: requested } : {}),
+    effectiveTimeoutMs,
+    timeoutSource: callerImposed ? "caller" : timeoutSource,
+    maxTimeoutMs: ceiling ?? 0,
+  };
+}
+
 export function resolveResearchTimeout(
   input: ResearchInput,
   globalTimeoutMs: number | undefined,
   registry?: ProfileRegistry,
 ): number | undefined {
-  const agentTimeout = profileTimeoutMs(input.agent, registry ?? DEFAULT_PROFILE_REGISTRY);
-  // A declared agent value, including zero, overrides the global value.
-  const ceiling = agentTimeout !== undefined ? agentTimeout : globalTimeoutMs;
-  const requested = input.timeout_ms;
-  if (requested === undefined) return ceiling && ceiling > 0 ? ceiling : undefined;
-  if (requested === 0) {
-    if (ceiling !== undefined && ceiling > 0) {
-      throw new Error(`Invalid timeout_ms for ${input.agent}: 0 (unlimited) exceeds the finite maximum of ${ceiling} milliseconds.`);
-    }
-    return undefined;
-  }
-  if (ceiling !== undefined && ceiling > 0 && requested > ceiling) {
-    throw new Error(`Invalid timeout_ms for ${input.agent}: ${requested} milliseconds exceeds the maximum of ${ceiling} milliseconds.`);
-  }
-  return requested;
+  const effective = resolveResearchTimeoutPolicy(input, globalTimeoutMs, registry).effectiveTimeoutMs;
+  return effective > 0 ? effective : undefined;
 }
 
 function selectedModel(
@@ -131,31 +159,59 @@ function interruptionMessage(message: string, result?: SessionOutcome): string {
   return `${message}\n${result.handoff.text}`;
 }
 
-function cancelled(message: string, result?: SessionOutcome): SessionOutcome {
+function timeoutDuration(value: number): string {
+  if (value === 0) return "unlimited";
+  if (value % 60_000 === 0) return `${value / 60_000} minute${value === 60_000 ? "" : "s"}`;
+  if (value % 1_000 === 0) return `${value / 1_000} second${value === 1_000 ? "" : "s"}`;
+  return `${value} milliseconds`;
+}
+
+function timeoutSummary(timeout: ResearchTimeoutMetadata): string {
+  const requested = timeout.requestedTimeoutMs === undefined
+    ? "omitted"
+    : timeoutDuration(timeout.requestedTimeoutMs);
+  const source = timeout.timeoutSource === "caller"
+    ? `caller value ${requested}`
+    : `${timeout.timeoutSource} policy`;
+  return `requested timeout_ms: ${requested}; deadline source: ${source}; effective: ${timeoutDuration(timeout.effectiveTimeoutMs)}; configured maximum: ${timeoutDuration(timeout.maxTimeoutMs)}`;
+}
+
+function withTimeoutMetadata(outcome: SessionOutcome, timeout: ResearchTimeoutMetadata): SessionOutcome {
   return {
+    ...outcome,
+    ...timeout,
+    ...(timeout.effectiveTimeoutMs > 0 ? { timeoutMs: timeout.effectiveTimeoutMs } : {}),
+  };
+}
+
+function cancelled(message: string, result?: SessionOutcome, timeout?: ResearchTimeoutMetadata): SessionOutcome {
+  const outcome: SessionOutcome = {
     status: "cancelled",
     handoff: createDiagnosticHandoff(interruptionMessage(message, result)),
     activity: result?.activity ?? initialActivity(),
     ...(result?.usage ? { usage: result.usage } : {}),
   };
+  return timeout ? withTimeoutMetadata(outcome, timeout) : outcome;
 }
 
-function timedOut(message: string, result?: SessionOutcome, timeoutMs?: number): SessionOutcome {
-  if (result?.status === "timed_out") {
-    return {
+function timedOut(message: string, result: SessionOutcome | undefined, timeout: ResearchTimeoutMetadata): SessionOutcome {
+  const diagnostic = createDiagnosticHandoff(
+    `${message} ${timeoutSummary(timeout)}. No completed report is claimed.` +
+    (result?.handoff.isError && result.handoff.text ? `\n${result.handoff.text}` : ""),
+  );
+  const outcome: SessionOutcome = result?.status === "timed_out"
+    ? {
       ...result,
       status: "timed_out",
-      handoff: { ...result.handoff, isError: true },
-      ...(timeoutMs !== undefined && result.timeoutMs === undefined ? { timeoutMs } : {}),
+      handoff: { ...diagnostic, ...(result.handoff.reportPath ? { reportPath: result.handoff.reportPath } : {}) },
+    }
+    : {
+      status: "timed_out",
+      handoff: diagnostic,
+      activity: result?.activity ?? initialActivity(),
+      ...(result?.usage ? { usage: result.usage } : {}),
     };
-  }
-  return {
-    status: "timed_out",
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    handoff: createDiagnosticHandoff(interruptionMessage(message, result)),
-    activity: result?.activity ?? initialActivity(),
-    ...(result?.usage ? { usage: result.usage } : {}),
-  };
+  return withTimeoutMetadata(outcome, timeout);
 }
 
 /**
@@ -217,7 +273,7 @@ export class ResearchRunner {
       activeRegistry = this.profileRegistry ?? options.profileRegistry;
       parsed = parseResearchInput(input, activeRegistry);
       // Validate relational timeout policy before anything enters the queue.
-      resolveResearchTimeout(parsed, this.timeoutMs, activeRegistry);
+      resolveResearchTimeoutPolicy(parsed, this.timeoutMs, activeRegistry);
     } catch (error) {
       return Promise.resolve({
         status: "failed",
@@ -226,24 +282,23 @@ export class ResearchRunner {
       });
     }
 
+    const timeout = resolveResearchTimeoutPolicy(parsed, this.timeoutMs, activeRegistry);
     if (this.shuttingDown) {
-      return Promise.resolve(cancelled("Research cancelled because the parent session is shutting down."));
+      return Promise.resolve(cancelled("Research cancelled because the parent session is shutting down.", undefined, timeout));
     }
     if (options.signal?.aborted) {
-      return Promise.resolve(cancelled("Research cancelled before it entered the queue."));
+      return Promise.resolve(cancelled("Research cancelled before it entered the queue.", undefined, timeout));
     }
 
     const queuedAt = this.now();
     const display = selectedModel(parsed, options, activeRegistry);
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
-      const effectiveTimeoutMs = resolveResearchTimeout(parsed, this.timeoutMs, activeRegistry);
       const entry: RunEntry = {
         id: this.nextId++, input: parsed, options, resolve, queuedAt, controller,
         profileRegistry: activeRegistry, onStatus, ...display,
         state: "queued", completion: Promise.resolve(), timer: undefined,
-        deadlineController: new AbortController(),
-        ...(effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs } : {}),
+        deadlineController: new AbortController(), timeout,
         timedOut: false,
         interruption: undefined, cancellationRequested: false, shutdownRequested: false, settled: false,
       };
@@ -323,7 +378,7 @@ export class ResearchRunner {
   }
 
   private async execute(entry: RunEntry): Promise<void> {
-    if (entry.effectiveTimeoutMs !== undefined) this.armTimeout(entry);
+    if (entry.timeout.effectiveTimeoutMs > 0) this.armTimeout(entry);
     let result: SessionOutcome;
     try {
       const childOptions: ResearchSessionOptions = {
@@ -331,14 +386,26 @@ export class ResearchRunner {
         ...(entry.profileRegistry ? { profileRegistry: entry.profileRegistry } : {}),
         signal: entry.controller.signal,
         ...(entry.options.signal ? { cancellationSignal: entry.options.signal } : {}),
-        ...(entry.effectiveTimeoutMs !== undefined ? { timeoutMs: entry.effectiveTimeoutMs } : {}),
+        ...(entry.timeout.effectiveTimeoutMs > 0 ? { timeoutMs: entry.timeout.effectiveTimeoutMs } : {}),
         deadlineSignal: entry.deadlineController.signal,
         timeoutGraceMs: this.timeoutGraceMs,
         ...(entry.startedAt !== undefined ? { startedAt: entry.startedAt } : {}),
         now: this.now,
         onActivity: (activity) => {
+          // A child can deliver a queued callback after its operation has finished. Once a
+          // cancellation has won, those callbacks must not resurrect a terminal TUI row. The
+          // timeout path is intentionally still allowed to report during its handoff grace.
+          if (
+            entry.settled ||
+            entry.cancellationRequested ||
+            entry.shutdownRequested ||
+            entry.interruption === "cancelled"
+          ) return;
           const snapshot = snapshotActivity(activity);
           this.emit(entry, "running", undefined, snapshot);
+          // A status observer may request cancellation synchronously while the live update is
+          // being published; do not forward that same stale callback to the caller observer.
+          if (entry.settled || entry.cancellationRequested || entry.shutdownRequested) return;
           entry.options.onActivity?.(snapshot);
         },
       };
@@ -357,16 +424,18 @@ export class ResearchRunner {
     if (entry.interruption === "cancelled" || entry.cancellationRequested || entry.shutdownRequested) {
       result = cancelled(entry.shutdownRequested
         ? "Research cancelled because the parent session is shutting down."
-        : "Research cancelled; no completed report is claimed.", result);
+        : "Research cancelled; no completed report is claimed.", result, entry.timeout);
     } else if (entry.interruption === "timed_out" || entry.controller.signal.aborted) {
-      result = timedOut("Research timed out; no completed report is claimed.", result, entry.effectiveTimeoutMs);
+      result = timedOut("Research timed out;", result, entry.timeout);
+    } else {
+      result = withTimeoutMetadata(result, entry.timeout);
     }
     this.finish(entry, result);
   }
 
   private armTimeout(entry: RunEntry): void {
-    const timeoutMs = entry.effectiveTimeoutMs;
-    if (timeoutMs === undefined || timeoutMs <= 0) return;
+    const timeoutMs = entry.timeout.effectiveTimeoutMs;
+    if (timeoutMs <= 0) return;
     const schedule = () => {
       const elapsed = this.now() - entry.startedAt!;
       const remaining = timeoutMs - elapsed;
@@ -374,6 +443,11 @@ export class ResearchRunner {
         if (entry.interruption !== undefined) return;
         entry.timedOut = true;
         entry.interruption = "timed_out";
+        // Preserve the work clock for the live handoff phase and terminal snapshot. Grace is
+        // separate from the effective work timeout and must not inflate elapsed/deadline display.
+        entry.workElapsedMs = Math.min(timeoutMs, Math.max(0, elapsed));
+        entry.phase = "preparing_timeout_handoff";
+        this.emit(entry, "running");
         const reason = { researchTimeout: true, message: "Research safety timeout elapsed." };
         // deadlineSignal is the explicit soft-interruption channel. The tagged abort on the
         // compatibility signal lets older injected runners wake up without making this a cancel.
@@ -399,7 +473,7 @@ export class ResearchRunner {
     if (index >= 0) this.queue.splice(index, 1);
     entry.settled = true;
     entry.removeCallerAbort?.();
-    const outcome = cancelled(message);
+    const outcome = cancelled(message, undefined, entry.timeout);
     this.emit(entry, "cancelled", outcome);
     entry.resolve(outcome);
     this.pump();
@@ -409,6 +483,7 @@ export class ResearchRunner {
     if (entry.settled) return;
     entry.settled = true;
     this.active.delete(entry);
+    entry.phase = undefined;
     const state: ResearchRunState = outcome.status;
     this.emit(entry, state, outcome);
     entry.resolve(outcome);
@@ -416,6 +491,14 @@ export class ResearchRunner {
   }
 
   private emit(entry: RunEntry, state: ResearchRunState, outcome?: SessionOutcome, activity?: SessionOutcome["activity"]): void {
+    const terminal = state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out";
+    // Terminal emission happens after finish marks the entry settled, but no later live update
+    // may replace that terminal snapshot. Explicit cancellation also wins over live updates;
+    // timeout grace remains valid because its interruption is timed_out.
+    if (
+      (entry.settled && !terminal) ||
+      (!terminal && (entry.cancellationRequested || entry.shutdownRequested || entry.interruption === "cancelled"))
+    ) return;
     if (!this.onStatus && !entry.onStatus) return;
     const now = this.now();
     const startedAt = entry.startedAt;
@@ -423,10 +506,15 @@ export class ResearchRunner {
     const status: ResearchRunStatus = {
       id: entry.id, state, agent: entry.input.agent, task: entry.input.task,
       queuedAt: entry.queuedAt,
+      ...(entry.phase !== undefined ? { phase: entry.phase } : {}),
       ...(entry.model !== undefined ? { model: entry.model } : {}),
       ...(entry.thinkingLevel !== undefined ? { thinkingLevel: entry.thinkingLevel } : {}),
-      ...(startedAt !== undefined ? { startedAt, elapsedMs: now - startedAt } : {}),
-      ...(entry.effectiveTimeoutMs !== undefined ? { timeoutMs: entry.effectiveTimeoutMs } : {}),
+      ...(startedAt !== undefined ? { startedAt, elapsedMs: entry.workElapsedMs ?? now - startedAt } : {}),
+      ...(entry.timeout.effectiveTimeoutMs > 0 ? { timeoutMs: entry.timeout.effectiveTimeoutMs } : {}),
+      ...(entry.timeout.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: entry.timeout.requestedTimeoutMs } : {}),
+      effectiveTimeoutMs: entry.timeout.effectiveTimeoutMs,
+      timeoutSource: entry.timeout.timeoutSource,
+      maxTimeoutMs: entry.timeout.maxTimeoutMs,
       ...(state === "completed" || state === "failed" || state === "cancelled" || state === "timed_out"
         ? { finishedAt: now } : {}),
       ...(currentActivity ? { activity: snapshotActivity(currentActivity) } : {}),

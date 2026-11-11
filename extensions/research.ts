@@ -7,7 +7,7 @@ import {
   type ResearchToolDetails,
 } from "../lib/render.ts";
 import {
-  describeProfiles, discoverProfiles, loadProfileTools, parseResearchInput,
+  describeProfiles, describeTimeoutPolicy, discoverProfiles, loadProfileTools, parseResearchInput,
   type ProfileRegistry, type ResearchInput,
 } from "../lib/profiles.ts";
 import { createResearchRunner, type ResearchRunStatus, type ResearchRunner } from "../lib/runner.ts";
@@ -24,6 +24,12 @@ const ResearchResultSchema = Type.Object({
   report: Type.String(),
   truncated: Type.Boolean(),
   reportPath: Type.Optional(Type.String()),
+  requestedTimeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  effectiveTimeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  timeoutSource: Type.Optional(Type.Union([
+    Type.Literal("agent"), Type.Literal("global"), Type.Literal("caller"), Type.Literal("default"),
+  ])),
+  maxTimeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
 }, { additionalProperties: false });
 
 type ResearchToolResult = AgentToolResult<ResearchToolDetails>;
@@ -88,6 +94,10 @@ function finalDetails(
     activity: finalStatus?.activity ?? outcome.activity,
     ...(finalStatus?.elapsedMs !== undefined ? { elapsedMs: finalStatus.elapsedMs } : {}),
     ...(finalStatus?.timeoutMs !== undefined ? { timeoutMs: finalStatus.timeoutMs } : {}),
+    ...(finalStatus?.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: finalStatus.requestedTimeoutMs } : outcome.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: outcome.requestedTimeoutMs } : {}),
+    ...(finalStatus?.effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: finalStatus.effectiveTimeoutMs } : outcome.effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: outcome.effectiveTimeoutMs } : {}),
+    ...(finalStatus?.timeoutSource !== undefined ? { timeoutSource: finalStatus.timeoutSource } : outcome.timeoutSource !== undefined ? { timeoutSource: outcome.timeoutSource } : {}),
+    ...(finalStatus?.maxTimeoutMs !== undefined ? { maxTimeoutMs: finalStatus.maxTimeoutMs } : outcome.maxTimeoutMs !== undefined ? { maxTimeoutMs: outcome.maxTimeoutMs } : {}),
     ...(finalStatus?.model !== undefined ? { model: finalStatus.model } : {}),
     ...(finalStatus?.thinkingLevel !== undefined ? { thinkingLevel: finalStatus.thinkingLevel } : {}),
     ...(outcome.handoff.truncated ? { truncated: true } : {}),
@@ -95,12 +105,16 @@ function finalDetails(
   };
 }
 
-function finalStructured(outcome: SessionOutcome) {
+function finalStructured(outcome: SessionOutcome, finalStatus?: ResearchRunStatus) {
   return {
     status: outcome.status,
     report: outcome.handoff.text,
     truncated: outcome.handoff.truncated,
     ...(outcome.handoff.reportPath ? { reportPath: outcome.handoff.reportPath } : {}),
+    ...(finalStatus?.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: finalStatus.requestedTimeoutMs } : outcome.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: outcome.requestedTimeoutMs } : {}),
+    ...(finalStatus?.effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: finalStatus.effectiveTimeoutMs } : outcome.effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: outcome.effectiveTimeoutMs } : {}),
+    ...(finalStatus?.timeoutSource !== undefined ? { timeoutSource: finalStatus.timeoutSource } : outcome.timeoutSource !== undefined ? { timeoutSource: outcome.timeoutSource } : {}),
+    ...(finalStatus?.maxTimeoutMs !== undefined ? { maxTimeoutMs: finalStatus.maxTimeoutMs } : outcome.maxTimeoutMs !== undefined ? { maxTimeoutMs: outcome.maxTimeoutMs } : {}),
   };
 }
 
@@ -142,7 +156,7 @@ async function executeResearch(
   return {
     content: [{ type: "text", text: outcome.handoff.text }],
     details,
-    structuredContent: finalStructured(outcome),
+    structuredContent: finalStructured(outcome, finalStatus),
     ...(outcome.usage ? { usage: outcome.usage } : {}),
     ...(outcome.status === "completed" && !outcome.handoff.isError ? {} : { isError: true }),
   };
@@ -182,13 +196,14 @@ export function createResearchExtension(dependencies: ResearchExtensionDependenc
     pi.registerTool({
       name: SUBAGENT_TOOL,
       label: "subagent",
-      description: `Delegate multi-step investigations or implementation tasks to a fresh isolated child. Available profiles: ${profilesDescription}. Use direct tools for a single focused lookup.`,
-      promptSnippet: "delegate multi-step investigations to a fresh isolated context",
+      description: `Delegate multi-step investigations or implementation tasks to a fresh isolated child. Available profiles: ${profilesDescription}. Use direct tools for a single focused lookup. ${describeTimeoutPolicy(profileRegistry)}`,
+      promptSnippet: "delegate multi-step investigations to a fresh isolated context; omit timeout_ms unless an actual deadline or budget applies",
       promptGuidelines: [
         `Choose the profile whose description and explicit tool policy fit the task: ${profilesDescription}. If a task needs both research and implementation, make separate delegated calls rather than broadening a profile's access.`,
         "For investigations spanning multiple files or external sources, delegate to subagent instead of reproducing the work in the parent with read, bash, or codemode. Delegate implementation work to worker when the child should make changes.",
         "Use direct Ketch tools only for a single focused lookup that does not need a separate investigation context.",
         "Provide a self-contained question and constraints. The child cannot see the parent transcript or implementation tools.",
+        describeTimeoutPolicy(profileRegistry),
       ],
       parameters: profileRegistry.inputSchema,
       outputSchema: ResearchResultSchema,

@@ -100,7 +100,7 @@ export function createResearchInputSchema(registry: ProfileRegistry): TSchema {
       }),
       timeout_ms: Type.Optional(
         Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER,
-          description: "Optional per-call deadline in milliseconds; 0 means unlimited when permitted." }),
+          description: "Optional caller safety deadline in milliseconds. Omit for the configured profile default; zero also adds no caller restriction. Use only for an actual deadline or budget, not as a completion estimate." }),
       ),
     },
     { additionalProperties: false },
@@ -465,4 +465,17 @@ export function renderProfileSystemPrompt(profile: ProfilePrompt): string {
 
 export function describeProfiles(registry = DEFAULT_PROFILE_REGISTRY): string {
   return registry.names.map((name) => `${name} (${registry.profiles[name]!.description})`).join("; ");
+}
+
+function timeoutDescription(value: number | undefined): string {
+  if (value === undefined) return "inherits the configured global timeout (absent/0 means unlimited)";
+  if (value === 0) return "agent maxTimeout 0: unlimited";
+  return `agent maximum ${value} seconds (effective default when timeout_ms is omitted or 0)`;
+}
+
+/** Public guidance derived from the immutable discovery snapshot, without inventing global values. */
+export function describeTimeoutPolicy(registry = DEFAULT_PROFILE_REGISTRY): string {
+  const profiles = registry.names.map((name) =>
+    `${name}: ${timeoutDescription(registry.prompts[name]?.maxTimeout)}`).join("; ");
+  return `Timeout policy: omit timeout_ms for ordinary delegation. It is a safety bound, not a target completion estimate; only shorten it for an actual explicit deadline or budget, never merely because a task sounds quick, small, or focused or because you guessed its runtime. Multi-file reviews and high-thinking implementation can take minutes. Values are milliseconds. The deadline starts after queue time when a child receives a slot; expiry includes a fixed 30-second grace period and bounded cleanup. The configured global timeout is the inherited default unless an agent maxTimeout is present. ${profiles}`;
 }

@@ -79,11 +79,12 @@ The v1 baseline tool name is `subagent`:
 ```ts
 subagent({
   agent: "scout" | "researcher" | "worker",
-  task: string
+  task: string,
+  timeout_ms?: number // milliseconds; omit for ordinary delegation
 })
 ```
 
-The task must contain non-whitespace text. It is the caller's responsibility to provide the question, relevant constraints, and context the child needs. Tasks are passed as data, not shell commands or CLI options. Large tasks must not depend on fitting into a command-line argument.
+The task must contain non-whitespace text. It is the caller's responsibility to provide the question, relevant constraints, and context the child needs. Tasks are passed as data, not shell commands or CLI options. Large tasks must not depend on fitting into a command-line argument. `timeout_ms` is a nonnegative millisecond safety bound: omit it for ordinary delegation, and use a positive value only for an actual explicit deadline or budget, not as a completion estimate. Zero is equivalent to omission and adds no caller restriction.
 
 The working directory is captured from the dispatching session. There is no model-controlled `cwd`, model override, tool override, or arbitrary agent-file parameter. Configuration of these policies is owned by the user/extension, not by delegated task text.
 
@@ -117,7 +118,7 @@ The following are inferred v1 baseline defaults, not separately user-approved va
 | Model | Parent's active provider/model captured at dispatch; optional user-configured per-profile override |
 | Thinking | Parent's level unless overridden per profile; clamp to the selected model's supported levels |
 | Maximum concurrent children | Two per parent extension runtime, shared across delegation calls |
-| Safety timeout | Disabled unless configured; `0` is unlimited, positive integer milliseconds start after a queue slot, and agent/call ceilings may shorten it |
+| Safety timeout | Disabled unless configured; global `0`/absence is unlimited. An agent `maxTimeout` (seconds), including `0`, overrides the global policy. Omitted/zero `timeout_ms` uses that effective agent/global policy; a positive caller value is honored only within a finite ceiling. The timer starts after a queue slot. |
 | Report target | Usually 400–800 words; shorter answers are preferable when sufficient |
 | Hard model-facing result cap | 12 KiB UTF-8, including headings, overflow notice, path, or diagnostic |
 | Profile discovery | Three bundled profiles only |
@@ -164,7 +165,7 @@ Only the final report is retained for overflow handling, not the child's reasoni
 
 A cancelled request must not start after its queue slot becomes available. Running cancellation/timeout initiates cleanup of the child and child-owned MCP processes; unresponsive owned processes must not remain indefinitely. Timers/listeners and the concurrency slot are released on every terminal path, including startup failure. Reload/shutdown cleans up active feature-owned runs.
 
-A terminal assistant error/abort can occur even when the process exits zero. Provider output-limit termination or a final tool request without a completed answer must not masquerade as a complete report. Automatic Pi recovery/retries may precede terminal completion; do not declare failure solely because an earlier recoverable event reported an error.
+A terminal assistant error/abort can occur even when the process exits zero. Provider output-limit termination or a final tool request without a completed answer must not masquerade as a complete report. Automatic Pi recovery/retries may precede terminal completion; do not declare failure solely because an earlier recoverable event reported an error. Accepted public results retain timeout metadata: requested value when supplied, effective milliseconds (`0` unlimited), source (`agent`, `global`, `caller`, or `default`), and configured maximum (`0` unlimited). Validation failures do not expose a resolved policy.
 
 Ketch errors retain their useful distinctions: validation errors require different input, missing configuration requires operator action, and upstream failures may be transient. Recoverable tool errors may be investigated by the child. A terminal run failure remains a failed delegation. Batch scrape per-URL errors and search backend partial failures must not be silently treated as evidence that every source succeeded.
 

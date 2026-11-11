@@ -62,10 +62,28 @@ export interface ResearchSessionOptions {
   readonly startedAt?: number;
   readonly onActivity?: (activity: SessionActivity) => void;
 }
+export type ResearchTimeoutSource = "agent" | "global" | "caller" | "default";
+
+/** Resolved timeout policy retained on accepted terminal outcomes and status updates. */
+export interface ResearchTimeoutMetadata {
+  /** The caller's explicit value, including zero; omitted when no value was supplied. */
+  readonly requestedTimeoutMs?: number;
+  /** Effective deadline in milliseconds; zero means unlimited. */
+  readonly effectiveTimeoutMs: number;
+  /** Which policy supplied the effective deadline. */
+  readonly timeoutSource: ResearchTimeoutSource;
+  /** Effective configured ceiling in milliseconds; zero means unlimited. */
+  readonly maxTimeoutMs: number;
+}
+
 export interface SessionOutcome {
   readonly status: "completed" | "failed" | "cancelled" | "timed_out";
-  /** Effective deadline metadata is retained on timeout outcomes. */
+  /** Backward-compatible finite effective deadline; absent when unlimited. */
   readonly timeoutMs?: number;
+  readonly requestedTimeoutMs?: number;
+  readonly effectiveTimeoutMs?: number;
+  readonly timeoutSource?: ResearchTimeoutSource;
+  readonly maxTimeoutMs?: number;
   readonly handoff: ReportHandoff;
   readonly activity: SessionActivity;
   readonly usage?: Usage;

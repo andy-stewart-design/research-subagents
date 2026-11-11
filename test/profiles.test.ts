@@ -40,6 +40,8 @@ test("the strict schema is compatible with the target SDK without importing its 
     assert.ok(Value.Check(parameters, input));
     assert.deepEqual(parseResearchInput(input), input);
   }
+  assert.match(JSON.stringify(parameters), /actual deadline or budget/);
+  assert.match(JSON.stringify(parameters), /completion estimate/);
 });
 
 test("bad input, extra fields, unknown agents, and orchestration parameters are rejected", () => {

@@ -5,17 +5,22 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component, stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ResearchInput } from "./profiles.ts";
-import type { ResearchRunState, ResearchRunStatus } from "./runner.ts";
+import type { ResearchRunState, ResearchRunPhase, ResearchRunStatus } from "./runner.ts";
 import type { SessionActivity } from "./session.ts";
 import { createDiagnosticHandoff } from "./report.ts";
 
 export interface ResearchToolDetails {
   readonly status: ResearchRunState;
+  readonly phase?: ResearchRunPhase;
   readonly agent: ResearchInput["agent"];
   readonly task: string;
   readonly activity?: SessionActivity;
   readonly elapsedMs?: number;
   readonly timeoutMs?: number;
+  readonly requestedTimeoutMs?: number;
+  readonly effectiveTimeoutMs?: number;
+  readonly timeoutSource?: "agent" | "global" | "caller" | "default";
+  readonly maxTimeoutMs?: number;
   readonly model?: string;
   readonly thinkingLevel?: string;
   readonly truncated?: boolean;
@@ -37,8 +42,66 @@ function formatElapsed(elapsedMs: number): string {
   return `${minutes}m ${roundedSeconds % 60}s`;
 }
 
+/** Format a deadline without hiding caller-supplied sub-second precision. */
+function formatTimeout(timeoutMs: number): string {
+  const seconds = Math.floor(timeoutMs / 1_000);
+  const milliseconds = timeoutMs % 1_000;
+  const secondsText = milliseconds === 0
+    ? `${seconds}s`
+    : `${(seconds + milliseconds / 1_000).toFixed(3).replace(/0+$/u, "").replace(/\.$/u, "")}s`;
+  if (seconds < 60) return secondsText;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (milliseconds === 0 && remainder === 0) return `${minutes}m`;
+  const remainderText = milliseconds === 0
+    ? `${remainder}s`
+    : `${(remainder + milliseconds / 1_000).toFixed(3).replace(/0+$/u, "").replace(/\.$/u, "")}s`;
+  return `${minutes}m ${remainderText}`;
+}
+
 function formatToolCallNoun(count: number): string {
   return `tool call${count === 1 ? "" : "s"}`;
+}
+
+/** Remove only the provider prefix; model IDs may themselves contain slashes. */
+function displayModel(model: string): string {
+  const separator = model.indexOf("/");
+  return separator < 0 ? model : model.slice(separator + 1);
+}
+
+function statusLabel(status: { readonly state: ResearchRunState; readonly phase?: ResearchRunPhase | undefined; readonly status?: ResearchRunState }): string {
+  return status.phase === "preparing_timeout_handoff" ? "preparing timeout handoff" : status.status ?? status.state;
+}
+
+type CompactStatus = {
+  readonly state: ResearchRunState;
+  readonly status?: ResearchRunState;
+  readonly phase?: ResearchRunPhase | undefined;
+  readonly model?: string | undefined;
+  readonly thinkingLevel?: string | undefined;
+  readonly activity?: SessionActivity | undefined;
+  readonly elapsedMs?: number | undefined;
+  readonly effectiveTimeoutMs?: number | undefined;
+};
+
+function compactStatus(status: CompactStatus): string {
+  const state = status.status ?? status.state;
+  let text = statusLabel({ state, phase: status.phase });
+  if (status.model) text += ` · ${displayModel(status.model)}`;
+  if (status.thinkingLevel) text += ` · ${status.thinkingLevel}`;
+  if (status.activity) {
+    text += ` · ${status.activity.toolCalls} ${formatToolCallNoun(status.activity.toolCalls)}`;
+    if (status.activity.latestTool) text += ` · ${status.activity.latestTool}`;
+  }
+  // Queue entries have no active work clock or deadline; do not imply that waiting consumes work time.
+  if (state !== "queued" && status.elapsedMs !== undefined) {
+    text += ` · ${formatElapsed(status.elapsedMs)}`;
+    // A zero timeout is unlimited and is omitted.
+    if (status.effectiveTimeoutMs !== undefined && status.effectiveTimeoutMs > 0) {
+      text += ` / ${formatTimeout(status.effectiveTimeoutMs)}`;
+    }
+  }
+  return text;
 }
 
 function renderToolHistory(activity: SessionActivity, theme: Theme): string {
@@ -64,21 +127,20 @@ export function detailsFromStatus(status: ResearchRunStatus): ResearchToolDetail
     status: status.state,
     agent: status.agent ?? "unknown" as ResearchInput["agent"],
     task: previewTask(status.task ?? ""),
+    ...(status.phase !== undefined ? { phase: status.phase } : {}),
     ...(status.activity ? { activity: status.activity } : {}),
     ...(status.elapsedMs !== undefined ? { elapsedMs: status.elapsedMs } : {}),
+    ...(status.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: status.requestedTimeoutMs } : {}),
+    ...(status.effectiveTimeoutMs !== undefined ? { effectiveTimeoutMs: status.effectiveTimeoutMs } : {}),
+    ...(status.timeoutSource !== undefined ? { timeoutSource: status.timeoutSource } : {}),
+    ...(status.maxTimeoutMs !== undefined ? { maxTimeoutMs: status.maxTimeoutMs } : {}),
     ...(status.model !== undefined ? { model: status.model } : {}),
     ...(status.thinkingLevel !== undefined ? { thinkingLevel: status.thinkingLevel } : {}),
   };
 }
 
 export function formatResearchProgress(status: ResearchRunStatus): string {
-  const model = status.model ? `; model ${status.model}` : "";
-  const thinking = status.thinkingLevel ? `; ${status.thinkingLevel}` : "";
-  const activity = status.activity?.latestTool
-    ? `; latest tool ${status.activity.latestTool}`
-    : status.activity ? `; ${status.activity.toolCalls} ${formatToolCallNoun(status.activity.toolCalls)}` : "";
-  const elapsed = status.elapsedMs !== undefined ? `; ${formatElapsed(status.elapsedMs)}` : "";
-  return `Subagent ${status.state}: ${status.agent ?? "unknown"}${model}${thinking}${activity}${elapsed}`;
+  return compactStatus(status);
 }
 
 export function renderResearchCall(args: ResearchInput, theme: Theme, context?: SubagentRenderContext): Component {
@@ -113,15 +175,12 @@ export function renderResearchResult(
 ): Component {
   const details = result.details;
   if (options.isPartial) {
-    if (!details) return new Text(theme.fg("warning", "Subagent running…"), 0, 0);
-    let progress = `Subagent ${details.status}`;
-    if (details.model) progress += ` · ${details.model}`;
-    if (details.thinkingLevel) progress += ` · ${details.thinkingLevel}`;
-    if (details.activity) {
-      progress += ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`;
-      if (details.activity.latestTool) progress += ` · ${details.activity.latestTool}`;
-    }
-    if (details.elapsedMs !== undefined) progress += ` · ${formatElapsed(details.elapsedMs)}`;
+    if (!details) return new Text(theme.fg("warning", "running…"), 0, 0);
+    let progress = compactStatus({
+      state: details.status, phase: details.phase, model: details.model,
+      thinkingLevel: details.thinkingLevel, activity: details.activity,
+      elapsedMs: details.elapsedMs, effectiveTimeoutMs: details.effectiveTimeoutMs,
+    });
     if (options.expanded && details.activity) progress += renderToolHistory(details.activity, theme);
     return new Text(theme.fg("warning", progress), 0, 0);
   }
@@ -133,14 +192,11 @@ export function renderResearchResult(
 
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";
-  let text = theme.fg(statusColor, `Subagent ${details.status}`);
-  if (details.model) text += theme.fg("dim", ` · ${details.model}`);
-  if (details.thinkingLevel) text += theme.fg("dim", ` · ${details.thinkingLevel}`);
-  if (details.activity) {
-    text += theme.fg("dim", ` · ${details.activity.toolCalls} ${formatToolCallNoun(details.activity.toolCalls)}`);
-    if (details.activity.latestTool) text += theme.fg("dim", ` · ${details.activity.latestTool}`);
-  }
-  if (details.elapsedMs !== undefined) text += theme.fg("dim", ` · ${formatElapsed(details.elapsedMs)}`);
+  let text = theme.fg(statusColor, compactStatus({
+    state: details.status, phase: details.phase, model: details.model,
+    thinkingLevel: details.thinkingLevel, activity: details.activity,
+    elapsedMs: details.elapsedMs, effectiveTimeoutMs: details.effectiveTimeoutMs,
+  }));
   if (details.truncated) text += theme.fg("warning", " · report clipped");
   if (options.expanded && details.activity) text += renderToolHistory(details.activity, theme);
   if (details.reportPath && options.expanded) text += `\n\n${theme.fg("dim", `Full report: ${details.reportPath}`)}`;

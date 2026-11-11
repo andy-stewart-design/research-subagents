@@ -7,7 +7,7 @@ import { Value } from "typebox/value";
 import { createResearchExtension } from "../extensions/research.ts";
 import { ResearchConfigSchema, parseConfig, selectModel } from "../lib/config.ts";
 import { ResearchInputSchema, discoverProfiles, loadProfile, parseResearchInput } from "../lib/profiles.ts";
-import { ResearchRunner, resolveResearchTimeout } from "../lib/runner.ts";
+import { ResearchRunner, resolveResearchTimeout, resolveResearchTimeoutPolicy } from "../lib/runner.ts";
 import type { SessionOutcome } from "../lib/session.ts";
 
 function outcome(): SessionOutcome {
@@ -47,8 +47,11 @@ Inspect the requested changes.`);
     agent: "reviewer", task: "review this", timeout_ms: 5000,
   });
   assert.equal(resolveResearchTimeout({ agent: "reviewer", task: "review" }, 120_000, registry), 30_000);
-  assert.throws(() => resolveResearchTimeout({ agent: "reviewer", task: "review", timeout_ms: 0 }, 120_000, registry), /exceeds/);
+  assert.equal(resolveResearchTimeout({ agent: "reviewer", task: "review", timeout_ms: 0 }, 120_000, registry), 30_000);
   assert.throws(() => resolveResearchTimeout({ agent: "reviewer", task: "review", timeout_ms: 30_001 }, 120_000, registry), /exceeds/);
+  assert.deepEqual(resolveResearchTimeoutPolicy({ agent: "reviewer", task: "review", timeout_ms: 0 }, 120_000, registry), {
+    requestedTimeoutMs: 0, effectiveTimeoutMs: 30_000, timeoutSource: "agent", maxTimeoutMs: 30_000,
+  });
   assert.throws(() => parseResearchInput({ agent: "scout", task: "not registered" }, registry), /Invalid research input/);
   const config = parseConfig({ profiles: { reviewer: { thinking: "high" } } }, registry);
   assert.equal(config.profiles.reviewer?.thinking, "high");
@@ -78,6 +81,10 @@ Inspect the requested changes.`);
   } as any;
   extension(api);
   assert.equal(tool.description.includes("reviewer (Reviews local changes without editing.)"), true);
+  assert.match(tool.description, /reviewer: agent maximum 30 seconds/);
+  assert.match(tool.description, /omit timeout_ms/);
+  assert.match(tool.description, /not a target completion estimate/);
+  assert.match(tool.description, /30-second grace period/);
   assert.ok(Value.Check(tool.parameters, { agent: "reviewer", task: "review this" }));
   const result = await tool.execute("review-1", { agent: "reviewer", task: "review this" }, undefined, undefined, {
     cwd: root,
@@ -134,8 +141,18 @@ test("timeout policy preserves unlimited and finite-ceiling semantics", (t) => {
   assert.equal(resolveResearchTimeout({ agent: "global", task: "x" }, 0, registry), undefined);
   assert.equal(resolveResearchTimeout({ agent: "bounded", task: "x" }, 0, registry), 10_000);
   assert.equal(resolveResearchTimeout({ agent: "unbounded", task: "x" }, 5000, registry), undefined);
+  assert.equal(resolveResearchTimeout({ agent: "unbounded", task: "x", timeout_ms: 0 }, 5000, registry), undefined);
   assert.equal(resolveResearchTimeout({ agent: "unbounded", task: "x", timeout_ms: 2500 }, 0, registry), 2500);
-  assert.throws(() => resolveResearchTimeout({ agent: "bounded", task: "x", timeout_ms: 0 }, 0, registry), /exceeds/);
+  assert.equal(resolveResearchTimeout({ agent: "bounded", task: "x", timeout_ms: 0 }, 0, registry), 10_000);
+  assert.equal(resolveResearchTimeout({ agent: "bounded", task: "x" }, 0, registry), 10_000);
+  assert.equal(resolveResearchTimeout({ agent: "global", task: "x", timeout_ms: 0 }, 12_000, registry), 12_000);
+  assert.equal(resolveResearchTimeout({ agent: "global", task: "x" }, 12_000, registry), 12_000);
+  assert.deepEqual(resolveResearchTimeoutPolicy({ agent: "global", task: "x", timeout_ms: 0 }, 12_000, registry), {
+    requestedTimeoutMs: 0, effectiveTimeoutMs: 12_000, timeoutSource: "global", maxTimeoutMs: 12_000,
+  });
+  assert.deepEqual(resolveResearchTimeoutPolicy({ agent: "global", task: "x" }, undefined, registry), {
+    effectiveTimeoutMs: 0, timeoutSource: "default", maxTimeoutMs: 0,
+  });
 });
 
 test("schema snapshots are deeply immutable and parsing keeps independent registry membership", (t) => {

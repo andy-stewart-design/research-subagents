@@ -26,8 +26,12 @@ const waitFor = (signal: AbortSignal): Promise<void> => signal.aborted
   : new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function options(task: string, signal?: AbortSignal): ResearchSessionOptions {
-  return { ...baseOptions, ...(signal ? { signal } : {}) };
+function options(task: string, signal?: AbortSignal, profileRegistry = TEST_PROFILE_REGISTRY): ResearchSessionOptions {
+  return {
+    ...baseOptions,
+    config: parseConfig({}, profileRegistry), profileRegistry,
+    ...(signal ? { signal } : {}),
+  };
 }
 
 test("shared capacity is two by default, queued cancellation never starts, and a released slot is reusable", async () => {
@@ -92,6 +96,98 @@ test("configured timeout uses the isolated profile policy rather than a user's a
   const result = await runner.run({ agent: "researcher", task: "bounded fixture timeout" }, options("bounded fixture timeout"));
   assert.equal(result.status, "timed_out");
   assert.equal(result.timeoutMs, 20);
+  assert.equal(result.effectiveTimeoutMs, 20);
+  assert.equal(result.timeoutSource, "global");
+  assert.equal(result.maxTimeoutMs, 20);
+  assert.match(result.handoff.text, /deadline source: global/);
+});
+
+test("deadline emits a live handoff phase with a work-only clock and clears it at terminal status", async () => {
+  const statuses: ResearchRunStatus[] = [];
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, timeoutMs: 20, onStatus: (status) => statuses.push(status),
+    runSession: async (_input, childOptions) => {
+      await waitFor(childOptions.deadlineSignal!);
+      childOptions.onActivity?.({ assistantMessages: 1, toolCalls: 1, latestTool: "read" });
+      return completed("deadline");
+    },
+  });
+  const result = await runner.run({ agent: "scout", task: "deadline phase" }, options("deadline phase"));
+  assert.equal(result.status, "timed_out");
+  const handoff = statuses.find((status) => status.phase === "preparing_timeout_handoff" && status.activity?.latestTool === "read");
+  assert.ok(handoff);
+  assert.equal(handoff.state, "running");
+  assert.equal(handoff.elapsedMs, handoff.effectiveTimeoutMs);
+  assert.equal(handoff.activity?.latestTool, "read");
+  assert.equal(statuses.at(-1)?.state, "timed_out");
+  assert.equal(statuses.at(-1)?.phase, undefined);
+});
+
+test("late timeout activity cannot replace the terminal status", async () => {
+  const statuses: ResearchRunStatus[] = [];
+  let lateActivity!: NonNullable<ResearchSessionOptions["onActivity"]>;
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, timeoutMs: 20, onStatus: (status) => statuses.push(status),
+    runSession: async (_input, childOptions) => {
+      lateActivity = childOptions.onActivity!;
+      await waitFor(childOptions.signal!);
+      return { status: "cancelled", handoff: createDiagnosticHandoff("aborted"), activity: { assistantMessages: 0, toolCalls: 0 } };
+    },
+  });
+  const result = await runner.run({ agent: "scout", task: "late timeout activity" }, options("late timeout activity"));
+  assert.equal(result.status, "timed_out");
+  const count = statuses.length;
+  lateActivity({ assistantMessages: 9, toolCalls: 9, latestTool: "late" });
+  assert.equal(statuses.length, count);
+  assert.equal(statuses.at(-1)?.state, "timed_out");
+});
+
+test("late cancellation activity cannot replace the terminal status", async () => {
+  const statuses: ResearchRunStatus[] = [];
+  const controller = new AbortController();
+  let lateActivity!: NonNullable<ResearchSessionOptions["onActivity"]>;
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, onStatus: (status) => statuses.push(status),
+    runSession: async (_input, childOptions) => {
+      lateActivity = childOptions.onActivity!;
+      await waitFor(childOptions.signal!);
+      return { status: "cancelled", handoff: createDiagnosticHandoff("aborted"), activity: { assistantMessages: 0, toolCalls: 0 } };
+    },
+  });
+  const pending = runner.run({ agent: "scout", task: "late cancellation activity" }, options("late cancellation activity", controller.signal));
+  await tick();
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.status, "cancelled");
+  const count = statuses.length;
+  lateActivity({ assistantMessages: 9, toolCalls: 9, latestTool: "late" });
+  assert.equal(statuses.length, count);
+  assert.equal(statuses.at(-1)?.state, "cancelled");
+});
+
+test("timeout diagnostics expose caller and discovered agent ceiling values", async () => {
+  const profileRegistry = Object.freeze({
+    ...TEST_PROFILE_REGISTRY,
+    prompts: Object.freeze({
+      ...TEST_PROFILE_REGISTRY.prompts,
+      scout: Object.freeze({ ...TEST_PROFILE_REGISTRY.prompts.scout!, maxTimeout: 900 }),
+    }),
+  });
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, profileRegistry,
+    runSession: async (_input, childOptions) => {
+      await waitFor(childOptions.signal!);
+      return { status: "cancelled", handoff: createDiagnosticHandoff("aborted"), activity: { assistantMessages: 0, toolCalls: 0 } };
+    },
+  });
+  const result = await runner.run({ agent: "scout", task: "caller deadline", timeout_ms: 10 }, options("caller deadline", undefined, profileRegistry));
+  assert.equal(result.status, "timed_out");
+  assert.equal(result.requestedTimeoutMs, 10);
+  assert.equal(result.effectiveTimeoutMs, 10);
+  assert.equal(result.timeoutSource, "caller");
+  assert.equal(result.maxTimeoutMs, 900_000);
+  assert.match(result.handoff.text, /requested timeout_ms: 10 milliseconds/);
+  assert.match(result.handoff.text, /configured maximum: 15 minutes/);
 });
 
 test("abort during listener registration cannot queue or start a child", async () => {

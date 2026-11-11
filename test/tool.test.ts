@@ -74,13 +74,26 @@ test("public research validates raw input before execution and returns only boun
   assert.deepEqual(captured?.input, { agent: "scout", task: rawTask });
   assert.equal(captured?.options.cwd, "/fixture-project");
   assert.equal(captured?.options.agentDir, "/fixture-agent");
-  assert.ok(updates.some((update) => /Subagent queued/.test(update.content[0].text)));
-  assert.ok(updates.some((update) => /Subagent completed/.test(update.content[0].text)));
+  assert.ok(updates.some((update) => /queued/.test(update.content[0].text)));
+  assert.ok(updates.some((update) => /completed/.test(update.content[0].text)));
 
   const hook = harness.handlers.get("tool_call")!;
   assert.throws(() => hook({ toolName: "subagent", input: { agent: "scout", task: " " } }), /Invalid research input/);
   assert.throws(() => harness.tool.prepareArguments({ agent: "researcher", task: "x", tools: ["bash"] }), /Invalid research input/);
   assert.doesNotThrow(() => hook({ toolName: "mcp__ketch__search", input: {} }));
+});
+
+test("public results expose requested, effective, source, and ceiling timeout metadata", async () => {
+  const harness = extensionHarness(async () => outcome(), () => parseConfig({ timeoutMs: 100 }));
+  const result = await harness.tool.execute("timeout-metadata", {
+    agent: "scout", task: "bounded question", timeout_ms: 50,
+  }, undefined, undefined, harness.context);
+  assert.equal(result.structuredContent.requestedTimeoutMs, 50);
+  assert.equal(result.structuredContent.effectiveTimeoutMs, 50);
+  assert.equal(result.structuredContent.timeoutSource, "caller");
+  assert.equal(result.structuredContent.maxTimeoutMs, 900_000);
+  assert.equal(result.details.effectiveTimeoutMs, 50);
+  assert.equal(result.details.timeoutSource, "caller");
 });
 
 test("an incompatible Ketch backend blocks only researcher, not local Scout", async () => {

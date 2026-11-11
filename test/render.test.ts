@@ -39,7 +39,7 @@ test("expanded prompt and live metadata have one separating blank line", () => {
   const lines = visibleLines([...call.render(80), ...result.render(80)]);
   const promptIndex = lines.indexOf("Expanded prompt");
   assert.ok(promptIndex >= 0);
-  assert.deepEqual(lines.slice(promptIndex, promptIndex + 3), ["Expanded prompt", "", "Subagent running"]);
+  assert.deepEqual(lines.slice(promptIndex, promptIndex + 3), ["Expanded prompt", "", "running"]);
   assert.notEqual(lines[promptIndex + 2], "");
 });
 
@@ -68,7 +68,7 @@ test("progress and expanded result rendering expose status/activity without a tr
   const status = {
     id: 1, state: "running" as const, agent: "researcher" as const, task: "question",
     queuedAt: 0, startedAt: 10, elapsedMs: 40_960,
-    model: "openai-codex/gpt-5.6-luna", thinkingLevel: "low",
+    model: "openai-codex/gpt-5.6-luna", thinkingLevel: "low", effectiveTimeoutMs: 900_000,
     activity: { assistantMessages: 1, toolCalls: 2, latestTool: "mcp__ketch__search" },
   };
   assert.match(formatResearchProgress(status), /running/);
@@ -77,12 +77,13 @@ test("progress and expanded result rendering expose status/activity without a tr
   assert.match(formatResearchProgress({ ...status, elapsedMs: 68_000 }), /1m 8s/);
   assert.doesNotMatch(formatResearchProgress(status), /ms/);
   assert.match(formatResearchProgress(status), /gpt-5\.6-luna/);
-  assert.match(formatResearchProgress(status), /; low/);
+  assert.match(formatResearchProgress(status), /· low/);
+  assert.equal(formatResearchProgress(status), "running · gpt-5.6-luna · low · 2 tool calls · mcp__ketch__search · 41s / 15m");
   for (const [toolCalls, label] of [[0, "0 tool calls"], [1, "1 tool call"], [2, "2 tool calls"]] as const) {
     assert.match(formatResearchProgress({
       ...status,
       activity: { assistantMessages: 1, toolCalls },
-    }), new RegExp(`; ${label}`));
+    }), new RegExp(`· ${label}`));
   }
   const details: ResearchToolDetails = {
     status: "completed", agent: "researcher", task: "question",
@@ -93,7 +94,7 @@ test("progress and expanded result rendering expose status/activity without a tr
     content: [{ type: "text", text: "## Answer\nEvidence only." }], details,
   }, { expanded: true, isPartial: false }, theme);
   const text = component.render(40).join("\n");
-  assert.match(text, /Subagent completed/);
+  assert.match(text, /completed/);
   assert.match(text, /gpt-5\.6-luna/);
   assert.match(text, /· low/);
   assert.match(text, /· 3 tool\s+calls/);
@@ -151,7 +152,7 @@ test("expanded completed sections separate history, report path, and report", ()
     content: [{ type: "text", text: "Final report" }], details,
   }, { expanded: true, isPartial: false }, theme).render(80));
   assert.deepEqual(lines, [
-    "Subagent completed · 1 tool call · report clipped",
+    "completed · 1 tool call · report clipped",
     "",
     "1. bash · 0s",
     "",
@@ -167,7 +168,39 @@ test("expanded reports keep a blank boundary even when there is no tool history"
     content: [{ type: "text", text: "Final report" }],
     details: { status: "completed", agent: "scout", task: "question", activity: { assistantMessages: 1, toolCalls: 0 } },
   }, { expanded: true, isPartial: false }, theme).render(80));
-  assert.deepEqual(lines, ["Subagent completed · 0 tool calls", "", "Final report"]);
+  assert.deepEqual(lines, ["completed · 0 tool calls", "", "Final report"]);
+});
+
+test("compact statuses show model ids, effective work deadlines, and the live timeout phase", () => {
+  const base = {
+    id: 7, state: "running" as const, agent: "worker" as const, task: "question", queuedAt: 0,
+    startedAt: 0, elapsedMs: 73_000, model: "provider/model/family", thinkingLevel: "high",
+    activity: { assistantMessages: 1, toolCalls: 24, latestTool: "read" },
+  };
+  assert.equal(
+    formatResearchProgress({ ...base, effectiveTimeoutMs: 900_000, timeoutSource: "caller", maxTimeoutMs: 3_600_000 }),
+    "running · model/family · high · 24 tool calls · read · 1m 13s / 15m",
+  );
+  assert.equal(
+    formatResearchProgress({ ...base, elapsedMs: 1_500, effectiveTimeoutMs: 90_000, timeoutSource: "caller", maxTimeoutMs: 900_000 }),
+    "running · model/family · high · 24 tool calls · read · 1.5s / 1m 30s",
+  );
+  assert.equal(formatResearchProgress({ ...base, effectiveTimeoutMs: 0 }),
+    "running · model/family · high · 24 tool calls · read · 1m 13s");
+  assert.equal(formatResearchProgress({ ...base, state: "queued", effectiveTimeoutMs: 900_000 }),
+    "queued · model/family · high · 24 tool calls · read");
+  assert.equal(formatResearchProgress({ ...base, phase: "preparing_timeout_handoff" }),
+    "preparing timeout handoff · model/family · high · 24 tool calls · read · 1m 13s");
+
+  const completed = stripTerminalSequences(renderResearchResult({
+    content: [], details: { status: "completed", agent: "worker", task: "question", model: "provider/model/family", elapsedMs: 73_000, effectiveTimeoutMs: 900_000 },
+  }, { expanded: false, isPartial: false }, theme).render(120).join("\n"));
+  const timedOut = stripTerminalSequences(renderResearchResult({
+    content: [{ type: "text", text: "incomplete handoff" }], details: { status: "timed_out", agent: "worker", task: "question", model: "provider/model/family", elapsedMs: 90_000, effectiveTimeoutMs: 90_000 },
+  }, { expanded: false, isPartial: false }, theme).render(120).join("\n"));
+  assert.equal(completed.trim(), "completed · model/family · 1m 13s / 15m");
+  assert.equal(timedOut.trim(), "timed_out · model/family · 1m 30s / 1m 30s");
+  assert.doesNotMatch(completed, /Subagent|provider\//);
 });
 
 test("setup diagnostics remain visible when a result has no renderer details", () => {
@@ -180,5 +213,5 @@ test("setup diagnostics remain visible when a result has no renderer details", (
 test("partial rendering remains useful without a TUI-specific dependency", () => {
   const details: ResearchToolDetails = { status: "running", agent: "scout", task: "question" };
   const component = renderResearchResult({ content: [], details }, { expanded: false, isPartial: true }, theme);
-  assert.match(component.render(20).join("\n"), /Subagent running/);
+  assert.match(component.render(20).join("\n"), /running/);
 });
