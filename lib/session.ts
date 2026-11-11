@@ -44,6 +44,8 @@ export interface ResearchSessionOptions {
   readonly parent: DispatchDefaults;
   /** Discovery snapshot shared by schema, config, model selection, and this child. */
   readonly profileRegistry?: ProfileRegistry;
+  /** Runner-captured profile snapshot; avoids rereading a mutable injected loader. */
+  readonly profileSnapshot?: ProfilePrompt;
   /** Parent/user cancellation. Timeout is delivered separately and tagged on the compatibility signal. */
   readonly signal?: AbortSignal;
   /** Parent cancellation kept separate from the runner's tagged timeout wake-up. */
@@ -526,9 +528,8 @@ export async function runResearchSession(
       throw new Error(interrupted ? "Research cancelled before startup." : "Research interrupted before startup.");
     }
     const { agent, task } = parseResearchInput(input, options.profileRegistry);
-    const loadedProfile = overrides.loadProfile
-      ? overrides.loadProfile(agent)
-      : loadProfile(agent, options.profileRegistry);
+    const loadedProfile = options.profileSnapshot
+      ?? (overrides.loadProfile ? overrides.loadProfile(agent) : loadProfile(agent, options.profileRegistry));
     const profilePrompt = renderProfileSystemPrompt(loadedProfile);
     const selectedTools = loadedProfile.tools;
     const profileDefaults = loadedProfile.defaults;

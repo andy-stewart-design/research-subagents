@@ -1,7 +1,8 @@
 import { createDiagnosticHandoff } from "./report.ts";
 import { selectModel } from "./config.ts";
 import {
-  DEFAULT_PROFILE_REGISTRY, loadProfileDefaults, parseResearchInput, type ProfileRegistry, type ResearchInput,
+  DEFAULT_PROFILE_REGISTRY, loadProfile, parseResearchInput,
+  type ProfilePrompt, type ProfileRegistry, type ResearchInput,
 } from "./profiles.ts";
 import {
   runResearchSession,
@@ -138,12 +139,12 @@ export function resolveResearchTimeout(
 function selectedModel(
   input: ResearchInput,
   options: ResearchSessionOptions,
+  profile: ProfilePrompt,
   registry?: ProfileRegistry,
 ): { model?: string; thinkingLevel?: string } {
   try {
     const selection = selectModel(
-      input.agent, options.config, options.parent,
-      loadProfileDefaults(input.agent, registry ?? options.profileRegistry), registry ?? options.profileRegistry,
+      input.agent, options.config, options.parent, profile.defaults, registry ?? options.profileRegistry,
     );
     return {
       model: `${selection.provider}/${selection.modelId}`,
@@ -266,6 +267,7 @@ export class ResearchRunner {
   ): Promise<SessionOutcome> {
     let parsed: ResearchInput;
     let activeRegistry: ProfileRegistry | undefined;
+    let profile: ProfilePrompt;
     try {
       if (this.profileRegistry && options.profileRegistry && this.profileRegistry !== options.profileRegistry) {
         throw new Error("Research profile registry snapshot mismatch between the runner and session options.");
@@ -290,12 +292,27 @@ export class ResearchRunner {
       return Promise.resolve(cancelled("Research cancelled before it entered the queue.", undefined, timeout));
     }
 
+    try {
+      // Capture the profile once. A host-provided loader can be mutable, so the runner's
+      // display and the child session must consume the same effective profile snapshot.
+      profile = this.services?.loadProfile
+        ? this.services.loadProfile(parsed.agent)
+        : loadProfile(parsed.agent, activeRegistry ?? options.profileRegistry);
+    } catch (error) {
+      return Promise.resolve({
+        status: "failed",
+        handoff: createDiagnosticHandoff(error instanceof Error ? error.message : "Unable to load the research profile."),
+        activity: initialActivity(),
+      });
+    }
+
     const queuedAt = this.now();
-    const display = selectedModel(parsed, options, activeRegistry);
+    const sessionOptions = { ...options, profileSnapshot: profile };
+    const display = selectedModel(parsed, sessionOptions, profile, activeRegistry);
     return new Promise<SessionOutcome>((resolve) => {
       const controller = new AbortController();
       const entry: RunEntry = {
-        id: this.nextId++, input: parsed, options, resolve, queuedAt, controller,
+        id: this.nextId++, input: parsed, options: sessionOptions, resolve, queuedAt, controller,
         profileRegistry: activeRegistry, onStatus, ...display,
         state: "queued", completion: Promise.resolve(), timer: undefined,
         deadlineController: new AbortController(), timeout,

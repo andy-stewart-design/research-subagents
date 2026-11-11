@@ -4,7 +4,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import {
-  DEFAULT_PROFILE_REGISTRY, getProfile, type ProfileDefaults, type ProfileName, type ProfileRegistry,
+  DEFAULT_PROFILE_REGISTRY, getProfile, type ProfileDefaults, type ProfileModelRouting, type ProfileName, type ProfileRegistry,
 } from "./profiles.ts";
 
 export const CONFIG_FILENAME = "research-subagents.json";
@@ -15,6 +15,8 @@ export const THINKING_LEVELS = Object.freeze(
 
 // A true end-of-string check also rejects trailing newlines; model IDs may contain slashes.
 const MODEL_PATTERN = "^[^/\\s]+/\\S+(?![\\s\\S])";
+const MODEL_VALUE_PATTERN = /^[^/\s]+\/\S+$/u;
+const PROVIDER_PATTERN = /^[^/\s]+$/u;
 const ThinkingSchema = Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)));
 
 const ProfileOverridesSchema = Type.Object(
@@ -133,6 +135,41 @@ export interface ModelSelection {
   readonly thinkingLevel?: ThinkingLevel;
 }
 
+function targetSelection(name: string, target: string): { provider: string; modelId: string } {
+  const separator = target.indexOf("/");
+  const provider = target.slice(0, separator);
+  const modelId = target.slice(separator + 1);
+  if (!MODEL_VALUE_PATTERN.test(target) || !PROVIDER_PATTERN.test(provider) || !modelId) {
+    throw new Error(
+      `No valid model selected for ${name}: select a parent model or configure profiles.${name}.model as provider/id.`,
+    );
+  }
+  return { provider, modelId };
+}
+
+function parentSelection(name: string, parent: DispatchDefaults): { provider: string; modelId: string } {
+  const provider = parent.model?.provider;
+  const modelId = parent.model?.id;
+  if (!provider || !modelId || !PROVIDER_PATTERN.test(provider) || /\s/u.test(modelId)) {
+    throw new Error(
+      `No valid model selected for ${name}: select a parent model or configure profiles.${name}.model as provider/id.`,
+    );
+  }
+  return { provider, modelId };
+}
+
+function routeSelection(name: string, routing: ProfileModelRouting, parent: DispatchDefaults): { provider: string; modelId: string } {
+  const parentProvider = parent.model?.provider;
+  // Exact own-property matching is intentional: providers such as openai and
+  // openai-codex are distinct, and constructor/__proto__ are not inherited routes.
+  if (parentProvider !== undefined && Object.hasOwn(routing.byProvider, parentProvider)) {
+    return targetSelection(name, routing.byProvider[parentProvider]!);
+  }
+  return routing.fallback === "parent"
+    ? parentSelection(name, parent)
+    : targetSelection(name, routing.fallback);
+}
+
 // Selection data only: the SDK adapter must validate availability/auth and clamp thinking later.
 export function selectModel(
   name: string,
@@ -146,23 +183,17 @@ export function selectModel(
   const override = Object.hasOwn(config.profiles, name)
     ? (config.profiles as Readonly<Record<string, ProfileOverrides>>)[name]
     : undefined;
-  const model = override?.model ?? defaults.model;
-  const separator = model?.indexOf("/") ?? -1;
-  const provider = model !== undefined ? model.slice(0, separator) : parent.model?.provider;
-  const modelId = model !== undefined ? model.slice(separator + 1) : parent.model?.id;
-
-  if (
-    (model !== undefined && separator < 1) ||
-    !provider || !modelId || /[\s/]/u.test(provider) || /\s/u.test(modelId)
-  ) {
-    throw new Error(
-      `No valid model selected for ${name}: select a parent model or configure profiles.${name}.model as provider/id.`,
-    );
-  }
+  const model = override?.model;
+  const selected = model !== undefined
+    ? targetSelection(name, model)
+    : defaults.model === undefined
+      ? parentSelection(name, parent)
+      : typeof defaults.model === "string"
+        ? targetSelection(name, defaults.model)
+        : routeSelection(name, defaults.model, parent);
   const thinkingLevel = override?.thinking ?? defaults.thinking ?? parent.thinkingLevel;
   return {
-    provider,
-    modelId,
+    ...selected,
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   };
 }

@@ -47,8 +47,17 @@ export interface Profile {
   readonly maxTimeout?: number;
 }
 
+export interface ProfileModelRouting {
+  /** Exact orchestrating provider names mapped to exact child provider/model targets. */
+  readonly byProvider: Readonly<Record<string, string>>;
+  /** `parent` inherits the parent's exact provider and model; otherwise this is provider/model. */
+  readonly fallback: "parent" | string;
+}
+
+export type ProfileModel = string | ProfileModelRouting;
+
 export interface ProfileDefaults {
-  readonly model?: string;
+  readonly model?: ProfileModel;
   readonly thinking?: ThinkingLevel;
 }
 
@@ -157,6 +166,7 @@ function defaultToolsFor(name: string): readonly string[] {
 }
 
 const FRONTMATTER_KEYS = new Set(["model", "thinking", "tools", "description", "maxTimeout"]);
+const PROVIDER_PATTERN = /^[^/\s]+$/u;
 
 function yamlError(name: string, message: string): Error {
   const detail = message.replace(/\s+/gu, " ").trim().replace(/[.]$/u, "");
@@ -190,6 +200,22 @@ function assertSafeYamlNode(name: string, node: Node | null, path: string): void
   }
 }
 
+function assertUniqueYamlKeys(name: string, node: Node | null, path: string): void {
+  if (node === null) return;
+  if (isMap<ParsedNode, ParsedNode | null>(node)) {
+    const seen = new Set<string>();
+    for (const pair of node.items) {
+      if (isScalar(pair.key) && typeof pair.key.value === "string") {
+        if (seen.has(pair.key.value)) throw yamlError(name, `duplicate ${pair.key.value} YAML key at ${path}`);
+        seen.add(pair.key.value);
+      }
+      assertUniqueYamlKeys(name, pair.value, `${path}.${isScalar(pair.key) ? String(pair.key.value) : "<key>"}`);
+    }
+  } else if (isSeq<ParsedNode>(node)) {
+    for (const [index, item] of node.items.entries()) assertUniqueYamlKeys(name, item, `${path}[${index}]`);
+  }
+}
+
 function yamlValue(name: string, node: Node | null, path: string): unknown {
   assertSafeYamlNode(name, node, path);
   if (node === null) return null;
@@ -212,6 +238,49 @@ function splitToolList(value: string): string[] {
   const tools = value.split(",").map((tool) => tool.trim());
   if (!value.trim() || tools.some((tool) => !tool)) throw new Error("expected [] or a comma-separated list");
   return tools;
+}
+
+function parseProfileModel(name: string, raw: unknown): ProfileModel {
+  if (typeof raw === "string") {
+    if (!MODEL_PATTERN.test(raw)) throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
+    return raw;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`Invalid ${name} prompt model: expected provider/model or a routing mapping.`);
+  }
+  const value = raw as Record<string, unknown>;
+  const keys = Object.keys(value);
+  if (!Object.hasOwn(value, "byProvider") || !Object.hasOwn(value, "fallback")) {
+    throw new Error(`Invalid ${name} prompt model: routing mappings require byProvider and fallback.`);
+  }
+  for (const key of keys) {
+    if (key !== "byProvider" && key !== "fallback") {
+      throw new Error(`Invalid ${name} prompt model: unsupported routing key ${JSON.stringify(key)}.`);
+    }
+  }
+  const routes = value.byProvider;
+  if (!routes || typeof routes !== "object" || Array.isArray(routes)) {
+    throw new Error(`Invalid ${name} prompt model.byProvider: expected a YAML mapping.`);
+  }
+  const byProvider: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const provider of Object.keys(routes as Record<string, unknown>)) {
+    if (!PROVIDER_PATTERN.test(provider)) {
+      throw new Error(`Invalid ${name} prompt model.byProvider provider ${JSON.stringify(provider)}: expected a non-empty provider identifier without whitespace or '/'.`);
+    }
+    const target = (routes as Record<string, unknown>)[provider];
+    if (typeof target !== "string" || !MODEL_PATTERN.test(target)) {
+      throw new Error(`Invalid ${name} prompt model.byProvider.${JSON.stringify(provider)}: expected provider/model.`);
+    }
+    byProvider[provider] = target;
+  }
+  const fallback = value.fallback;
+  if (typeof fallback !== "string" || !fallback.trim()) {
+    throw new Error(`Invalid ${name} prompt model.fallback: expected parent or provider/model.`);
+  }
+  if (fallback !== "parent" && !MODEL_PATTERN.test(fallback)) {
+    throw new Error(`Invalid ${name} prompt model.fallback: expected parent or provider/model.`);
+  }
+  return Object.freeze({ byProvider: Object.freeze(byProvider), fallback }) as ProfileModelRouting;
 }
 
 function parseTools(name: string, raw: unknown, defaults: readonly string[]): readonly string[] {
@@ -291,6 +360,7 @@ function parseFrontmatter(name: string, source: string): ParsedFrontmatter {
   if (document.warnings.length) throw yamlError(name, document.warnings[0]!.message);
   if (!isMap<ParsedNode, ParsedNode | null>(document.contents)) throw yamlError(name, "frontmatter root must be a YAML mapping");
   assertSafeYamlNode(name, document.contents, "frontmatter");
+  assertUniqueYamlKeys(name, document.contents, "frontmatter");
 
   const metadata: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const nodes: Record<string, Node | null> = Object.create(null) as Record<string, Node | null>;
@@ -326,7 +396,8 @@ export function parseProfilePrompt(
   const thinking = metadata.thinking;
   const description = metadata.description;
   const rawMaxTimeout = metadata.maxTimeout;
-  if (model !== undefined && typeof model !== "string") throw new Error(`Invalid ${name} prompt model: expected a string.`);
+  let parsedModel: ProfileModel | undefined;
+  if (model !== undefined) parsedModel = parseProfileModel(name, model);
   if (thinking !== undefined && typeof thinking !== "string") throw new Error(`Invalid ${name} prompt thinking: expected a string.`);
   if (description !== undefined && typeof description !== "string") throw new Error(`Invalid ${name} prompt description: expected a string.`);
   let maxTimeout: number | undefined;
@@ -348,14 +419,13 @@ export function parseProfilePrompt(
     throw new Error(`Invalid ${name} prompt maxTimeout: seconds exceed the safe timeout range.`);
   }
   if (description !== undefined && !description.trim()) throw new Error(`Invalid ${name} prompt description: expected non-empty text.`);
-  if (model !== undefined && !MODEL_PATTERN.test(model)) throw new Error(`Invalid ${name} prompt model: expected provider/model.`);
   if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ThinkingLevel)) throw new Error(`Invalid ${name} prompt thinking level: ${thinking}.`);
   return {
     text,
     ...(maxTimeout !== undefined ? { maxTimeout } : {}),
     tools: parseTools(name, metadata.tools, fallbackTools),
     defaults: Object.freeze({
-      ...(model !== undefined ? { model } : {}),
+      ...(parsedModel !== undefined ? { model: parsedModel } : {}),
       ...(thinking !== undefined ? { thinking: thinking as ThinkingLevel } : {}),
     }),
     ...(description !== undefined ? { description: description.trim() } : {}),

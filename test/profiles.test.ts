@@ -145,6 +145,37 @@ body`).maxTimeout, 30);
   assert.throws(() => parseProfilePrompt("worker", "---\ntools: [read]\nmodel: fixture/model\ntools: [bash]\n---\nbody"), /duplicate tools/);
 });
 
+test("model frontmatter accepts scalar and exact provider routing defaults", () => {
+  const parsed = parseProfilePrompt("fixture", `---
+model:
+  byProvider:
+    anthropic: anthropic/child
+    openai: openai/child-openai
+    openai-codex: openai-codex/child-codex
+    constructor: custom/constructor-child
+  fallback: custom/fallback
+---
+body`);
+  const model = parsed.defaults.model;
+  assert.ok(model && typeof model !== "string");
+  assert.deepEqual({ ...model.byProvider }, {
+    anthropic: "anthropic/child", openai: "openai/child-openai",
+    "openai-codex": "openai-codex/child-codex", constructor: "custom/constructor-child",
+  });
+  assert.equal(model.fallback, "custom/fallback");
+  assert.ok(Object.isFrozen(model) && Object.isFrozen(model.byProvider));
+  assert.deepEqual(parseProfilePrompt("fixture", "---\nmodel: provider/id\n---\nbody").defaults, { model: "provider/id" });
+  for (const source of [
+    "---\nmodel:\n  byProvider:\n    anthropic: anthropic/child\n---\nbody",
+    "---\nmodel:\n  byProvider: []\n  fallback: parent\n---\nbody",
+    "---\nmodel:\n  byProvider:\n    bad/provider: x/y\n  fallback: parent\n---\nbody",
+    "---\nmodel:\n  byProvider:\n    anthropic: invalid\n  fallback: parent\n---\nbody",
+    "---\nmodel:\n  byProvider: {}\n  fallback: 1\n---\nbody",
+    "---\nmodel:\n  byProvider: {}\n  fallback: parent\n  byParent: x/y\n---\nbody",
+    "---\nmodel:\n  byProvider:\n    anthropic: anthropic/one\n    anthropic: anthropic/two\n  fallback: parent\n---\nbody",
+  ]) assert.throws(() => parseProfilePrompt("fixture", source), /Invalid fixture prompt/);
+});
+
 test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {
   assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
   assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });

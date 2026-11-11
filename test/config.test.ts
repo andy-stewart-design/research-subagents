@@ -10,7 +10,7 @@ import {
   parseConfig,
   selectModel,
 } from "../lib/config.ts";
-import type { ProfileName } from "../lib/profiles.ts";
+import { parseProfilePrompt, type ProfileName } from "../lib/profiles.ts";
 
 function fixture(t: TestContext): string {
   const dir = mkdtempSync(join(tmpdir(), "research-config-test-"));
@@ -157,6 +157,46 @@ test("relative agent directories cannot accidentally read repository configurati
 const parent = Object.freeze({
   model: Object.freeze({ provider: "openai-codex", id: "parent-model" }),
   thinkingLevel: "high" as const,
+});
+
+test("provider routes match exactly, use fallback only for unmatched providers, and preserve thinking precedence", () => {
+  const profile = parseProfilePrompt("fixture", `---
+model:
+  byProvider:
+    anthropic: anthropic/child-anthropic
+    openai: openai/child-openai
+    openai-codex: openai-codex/child-codex
+    custom-provider: custom-provider/child-custom
+  fallback: fixed/fallback
+thinking: low
+---
+body`);
+  const config = parseConfig({ profiles: { scout: { thinking: "medium" } } });
+  const select = (provider: string) => selectModel("scout", config, {
+    model: { provider, id: "parent-id" }, thinkingLevel: "high",
+  }, profile.defaults);
+  assert.deepEqual(select("anthropic"), { provider: "anthropic", modelId: "child-anthropic", thinkingLevel: "medium" });
+  assert.deepEqual(select("openai"), { provider: "openai", modelId: "child-openai", thinkingLevel: "medium" });
+  assert.deepEqual(select("openai-codex"), { provider: "openai-codex", modelId: "child-codex", thinkingLevel: "medium" });
+  assert.deepEqual(select("custom-provider"), { provider: "custom-provider", modelId: "child-custom", thinkingLevel: "medium" });
+  assert.deepEqual(select("other"), { provider: "fixed", modelId: "fallback", thinkingLevel: "medium" });
+  assert.deepEqual(selectModel("scout", parseConfig({}), {
+    model: { provider: "other", id: "parent-id" }, thinkingLevel: "high",
+  }, { model: profile.defaults.model! }), { provider: "fixed", modelId: "fallback", thinkingLevel: "high" });
+  assert.deepEqual(selectModel("scout", parseConfig({ profiles: { scout: { model: "override/id" } } }), {
+    model: { provider: "anthropic", id: "parent-id" },
+  }, profile.defaults), { provider: "override", modelId: "id", thinkingLevel: "low" });
+});
+
+test("parent fallback inherits the exact parent model and omission still inherits", () => {
+  const profile = parseProfilePrompt("fixture", "---\\nmodel:\\n  byProvider: {}\\n  fallback: parent\\n---\\nbody");
+  const parent = { model: { provider: "custom-parent", id: "vendor/model/id" } };
+  assert.deepEqual(selectModel("scout", parseConfig({}), parent, profile.defaults), {
+    provider: "custom-parent", modelId: "vendor/model/id",
+  });
+  assert.deepEqual(selectModel("scout", parseConfig({}), parent), {
+    provider: "custom-parent", modelId: "vendor/model/id",
+  });
 });
 
 test("profile-file model defaults are used and explicit config overrides them", () => {

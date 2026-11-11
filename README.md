@@ -160,7 +160,19 @@ Defaults are concurrency **2** and **no research deadline**. `timeoutMs` is abse
 
 Accepted results expose `requestedTimeoutMs` when supplied, `effectiveTimeoutMs` (`0` means unlimited), `timeoutSource` (`agent`, `global`, `caller`, or `default`), and `maxTimeoutMs` (`0` means unlimited), so a caller override can be compared with the configured agent ceiling. Validation failures do not claim resolved timeout metadata. When a deadline expires, the result is irreversibly `timed_out`/incomplete and is returned as an error; its diagnostic names the requested value, deadline source, effective deadline, and configured maximum. Multi-file reviews and high-thinking implementation may take minutes; do not use arbitrary tiny overrides. The child gets a fixed 30-second grace window: interruption is requested immediately, the original operation must settle before one tool-free same-session handoff is attempted, all callable tools are disabled first, and the handoff is forcibly persisted (including short summaries) before disposal. A stalled abort, startup, summary, persistence, or grace expiry returns a diagnostic naming the last active tool and uncertainty about late work. Explicit parent cancellation skips this handoff and interrupts promptly. Callers should allow at least the work deadline plus 30 seconds of grace and bounded cleanup before applying an outer request timeout. Cleanup is bounded; Pi SDK disposal is not treated as proof that arbitrary in-process tools stopped, although owned Ketch process termination is retained as a fallback.
 
-Agent files carry the profile source of truth in ordinary YAML markdown frontmatter. `model` and `thinking` set string defaults; `description` documents the public enum; `tools` is an optional exact allowlist; `maxTimeout` is an optional nonnegative integer timeout ceiling in seconds (zero means unlimited). Existing bundled profiles retain their historical omitted-tools defaults, while a new profile without `tools` receives no tools. `tools: []` also intentionally exposes no tools. YAML flow arrays may be inline or wrapped across lines, and block sequences are supported, for example `tools: [read, grep, bash]`, a multiline flow array, or:
+Agent files carry the profile source of truth in ordinary YAML markdown frontmatter. A scalar `model: provider/id` remains supported. A routed model uses an exact provider map plus a required explicit fallback:
+
+```yaml
+model:
+  byProvider:
+    anthropic: anthropic/claude-sonnet-4-5
+    openai-codex: openai-codex/gpt-5.6-luna
+  fallback: parent
+```
+
+`byProvider` keys are exact provider identifiers (so `openai` and `openai-codex` are distinct); custom provider strings are allowed. Targets must be `provider/model`, with no provider aliases or normalization. An empty `byProvider` is valid when an explicit fallback is useful. `fallback: parent` inherits the parent's exact provider and model; it may instead be an explicit `provider/model`. A matching route wins over the fallback. Routing requires `fallback` and only selects on an unmatched provider—it is not runtime error recovery: unavailable, unauthenticated, or otherwise failing selected models still fail without retrying another route. Exact precedence is: scalar `profiles.<agent>.model` override, matching frontmatter route, routed fallback, scalar frontmatter model, then omitted-model parent inheritance. `research-subagents.json` model overrides remain scalar `provider/id` values; routed objects there are rejected. Thinking remains `research-subagents.json` override, frontmatter default, then parent thinking.
+
+`thinking` sets a string default; `description` documents the public enum; `tools` is an optional exact allowlist; `maxTimeout` is an optional nonnegative integer timeout ceiling in seconds (zero means unlimited). Existing bundled profiles retain their historical omitted-tools defaults, while a new profile without `tools` receives no tools. `tools: []` also intentionally exposes no tools. YAML flow arrays may be inline or wrapped across lines, and block sequences are supported, for example `tools: [read, grep, bash]`, a multiline flow array, or:
 
 ```yaml
 tools:

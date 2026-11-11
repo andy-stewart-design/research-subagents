@@ -8,6 +8,7 @@ import test, { type TestContext } from "node:test";
 import { Type } from "typebox";
 import type { AgentSessionEvent, CreateAgentSessionOptions, ExtensionError, SessionManager } from "@earendil-works/pi-coding-agent";
 import { parseConfig } from "../lib/config.ts";
+import { ResearchRunner } from "../lib/runner.ts";
 import type { ProfileName, ProfilePrompt } from "../lib/profiles.ts";
 import { MAX_HANDOFF_BYTES } from "../lib/report.ts";
 import { MAX_TOOL_SUMMARY, runResearchSession, type ChildSession, type ResearchSessionOptions, type SessionServices } from "../lib/session.ts";
@@ -114,6 +115,66 @@ test("worker sessions receive only implementation tools and no research extensio
   assert.deepEqual(h.launches[0]!.tools, ["read", "write", "edit", "bash"]);
   assert.deepEqual(h.launches[0]!.customTools, undefined);
   assert.deepEqual(h.launches[0]!.resourceLoader!.getExtensions().extensions, []);
+});
+
+test("runner status and child dispatch share one injected profile snapshot across routes and overrides", async (t) => {
+  const opts = await options(t), h = harness();
+  const profile: ProfilePrompt = {
+    text: "routed fixture profile", tools: ["read"], defaults: {
+      model: {
+        byProvider: { anthropic: "openai-codex/gpt-5.6-luna" },
+        fallback: "anthropic/claude-sonnet-4-5",
+      },
+      thinking: "low",
+    },
+  };
+  let loads = 0;
+  h.services.loadProfile = () => { loads++; return profile; };
+  const statuses: import("../lib/runner.ts").ResearchRunStatus[] = [];
+  const runner = new ResearchRunner({
+    maxConcurrency: 1, profileRegistry: TEST_PROFILE_REGISTRY, services: h.services,
+    onStatus: (status) => statuses.push(status),
+  });
+
+  const routed = await runner.run({ agent: "scout", task: "matched route" }, opts);
+  assert.equal(routed.status, "completed", routed.handoff.text);
+  assert.equal(h.launches[0]!.model?.provider, "openai-codex");
+  assert.equal(h.launches[0]!.model?.id, "gpt-5.6-luna");
+  assert.equal(h.launches[0]!.thinkingLevel, "low");
+  assert.equal(statuses.filter((status) => status.state === "completed").at(-1)?.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(statuses.filter((status) => status.state === "completed").at(-1)?.thinkingLevel, "low");
+
+  const fallback = await runner.run({ agent: "scout", task: "fallback route" }, {
+    ...opts, parent: { model: { provider: "unmapped", id: "parent-model" }, thinkingLevel: "high" },
+  });
+  assert.equal(fallback.status, "completed", fallback.handoff.text);
+  assert.equal(h.launches[1]!.model?.provider, "anthropic");
+  assert.equal(h.launches[1]!.model?.id, "claude-sonnet-4-5");
+  assert.equal(h.launches[1]!.thinkingLevel, "low");
+  assert.equal(statuses.filter((status) => status.state === "completed").at(-1)?.model, "anthropic/claude-sonnet-4-5");
+
+  const externalOverride = await runner.run({ agent: "scout", task: "external override" }, {
+    ...opts, config: parseConfig({ profiles: { scout: { model: "anthropic/claude-sonnet-4-5", thinking: "medium" } } }, TEST_PROFILE_REGISTRY),
+  });
+  assert.equal(externalOverride.status, "completed", externalOverride.handoff.text);
+  assert.equal(h.launches[2]!.model?.provider, "anthropic");
+  assert.equal(h.launches[2]!.model?.id, "claude-sonnet-4-5");
+  assert.equal(h.launches[2]!.thinkingLevel, "medium");
+  assert.equal(statuses.filter((status) => status.state === "completed").at(-1)?.model, "anthropic/claude-sonnet-4-5");
+  assert.equal(statuses.filter((status) => status.state === "completed").at(-1)?.thinkingLevel, "medium");
+  assert.equal(loads, 3, "the mutable injected loader is called once per run");
+
+  h.services.createModelRuntime = async () => {
+    const runtime = await unitRuntime();
+    runtime.getModel = () => undefined;
+    return runtime;
+  };
+  const unavailable = await runner.run({ agent: "scout", task: "unavailable selected route" }, opts);
+  assert.equal(unavailable.status, "failed");
+  assert.match(unavailable.handoff.text, /no fallback/i);
+  assert.equal(h.launches.length, 3, "an unavailable selected target must not fall back into session creation");
+  assert.equal(statuses.filter((status) => status.state === "failed").at(-1)?.model, "openai-codex/gpt-5.6-luna");
+  assert.equal(loads, 4);
 });
 
 test("configured profiles expand and narrow every allowlist without leaking tools or extensions", async (t) => {
