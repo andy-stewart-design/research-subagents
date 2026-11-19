@@ -104,6 +104,20 @@ test("public research completes through the native extension tool pipeline witho
   assert.ok(session.getActiveToolNames().includes("subagent"));
   assert.ok(session.getActiveToolNames().includes("read"));
 
+  const invalidCall = await runToolCall({
+    type: "toolCall", id: "fixture-invalid-subagent", name: "subagent",
+    arguments: { agent: "scout", task: "Find the fixture fact.", parameters: {} },
+  }, {
+    tools: session.agent.state.tools,
+    assistantMessage: assistant,
+    context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
+  });
+  assert.equal(invalidCall.isError, true);
+  assert.deepEqual(invalidCall.result.details, {});
+  assert.equal(invalidCall.result.content[0]?.type, "text");
+  assert.equal(invalidCall.result.content[0]?.text,
+    "Unexpected field: parameters. Allowed fields: agent, task, timeout_ms.");
+
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   session.dispose();
   session = undefined;

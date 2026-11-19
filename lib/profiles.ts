@@ -122,8 +122,76 @@ export interface ResearchInput {
   readonly timeout_ms?: number;
 }
 
-function profileNames(registry: ProfileRegistry): string {
-  return registry.names.join('", "');
+const RESEARCH_INPUT_FIELDS = Object.freeze(["agent", "task", "timeout_ms"] as const);
+const MAX_INPUT_DIAGNOSTIC_LENGTH = 1_024;
+
+function boundedInputDiagnostic(text: string): string {
+  if (text.length <= MAX_INPUT_DIAGNOSTIC_LENGTH) return text;
+  return `${text.slice(0, MAX_INPUT_DIAGNOSTIC_LENGTH - 1)}…`;
+}
+
+function allowedAgentNames(registry: ProfileRegistry): string {
+  return boundedInputDiagnostic(registry.names.join(", "));
+}
+
+const UNSAFE_FIELD_NAME_CHARACTERS = /["\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+const UNESCAPED_JSON_CONTROL_CHARACTERS = /[\u007f-\u009f\u2028\u2029]/gu;
+
+function ownFieldLabel(key: PropertyKey): string {
+  if (typeof key !== "string") return "<symbol>";
+  const bounded = key.length <= 80 ? key : `${key.slice(0, 79)}…`;
+  if (!UNSAFE_FIELD_NAME_CHARACTERS.test(bounded)) return bounded;
+  // JSON.stringify escapes C0 controls, quotes, backslashes, and lone surrogates. It leaves
+  // DEL, C1 controls, and Unicode line separators untouched, so escape those explicitly too.
+  return JSON.stringify(bounded).replace(UNESCAPED_JSON_CONTROL_CHARACTERS, (character) =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+function researchInputDiagnostic(input: unknown, registry: ProfileRegistry): string | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return "Invalid research input: expected an object with required fields agent and task, and optional timeout_ms.";
+  }
+
+  try {
+    const value = input as Record<string, unknown>;
+    const keys = Reflect.ownKeys(value);
+    const unexpected = keys
+      .filter((key) => typeof key !== "string" || !(RESEARCH_INPUT_FIELDS as readonly string[]).includes(key))
+      .map(ownFieldLabel)
+      .sort();
+    const errors: string[] = [];
+    const unexpectedShown = unexpected.slice(0, 32);
+    if (unexpected.length === 1) {
+      errors.push(`Unexpected field: ${unexpectedShown[0]}. Allowed fields: agent, task, timeout_ms.`);
+    } else if (unexpected.length > 1) {
+      const omitted = unexpected.length - unexpectedShown.length;
+      errors.push(`Unexpected fields: ${unexpectedShown.join(", ")}${omitted ? `, …${omitted} more` : ""}. Allowed fields: agent, task, timeout_ms.`);
+    }
+
+    if (!Object.hasOwn(value, "agent")) {
+      errors.push(`Missing field: agent. Allowed agents: ${allowedAgentNames(registry)}.`);
+    } else if (typeof value.agent !== "string") {
+      errors.push(`Invalid field: agent. Allowed agents: ${allowedAgentNames(registry)}.`);
+    } else if (!registry.names.includes(value.agent)) {
+      errors.push(`Unknown agent. Allowed agents: ${allowedAgentNames(registry)}.`);
+    }
+
+    if (!Object.hasOwn(value, "task")) {
+      errors.push("Missing field: task. Expected a non-empty, non-whitespace string.");
+    } else if (typeof value.task !== "string" || value.task.length < 1 || !/\S/u.test(value.task)) {
+      errors.push("Invalid field: task must be a non-empty, non-whitespace string.");
+    }
+
+    if (Object.hasOwn(value, "timeout_ms") &&
+      (!Number.isSafeInteger(value.timeout_ms) || (value.timeout_ms as number) < 0)) {
+      errors.push("Invalid field: timeout_ms must be a nonnegative safe integer number of milliseconds.");
+    }
+    return errors.length ? boundedInputDiagnostic(errors.join(" ")) : undefined;
+  } catch {
+    // Proxies and accessors are not valid tool input; do not expose their thrown values as diagnostics.
+    return "Invalid research input: expected an object with required fields agent and task, and optional timeout_ms.";
+  }
 }
 
 function validResearchInput(input: unknown, registry: ProfileRegistry): input is { agent: string; task: string; timeout_ms?: number } {
@@ -142,10 +210,17 @@ export function parseResearchInput(input: unknown, registry?: ProfileRegistry): 
   const active = registry ?? DEFAULT_PROFILE_REGISTRY;
   // Do not rely solely on the exported TypeBox object: consumers can otherwise mutate a schema
   // before this parser sees it. Membership and exact shape are checked against this snapshot.
-  if (!validResearchInput(input, active)) {
-    throw new Error(
-      `Invalid research input: provide only agent ("${profileNames(active)}") and a non-whitespace task.`,
-    );
+  const diagnostic = researchInputDiagnostic(input, active);
+  if (diagnostic !== undefined) throw new Error(diagnostic);
+  // Keep this exact runtime check in addition to the field diagnostics: the schema is public and
+  // callers may mutate or otherwise bypass it before this parser sees the value.
+  try {
+    if (!validResearchInput(input, active)) {
+      throw new Error("Invalid research input: expected an object with required fields agent and task, and optional timeout_ms.");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Invalid research input:")) throw error;
+    throw new Error("Invalid research input: expected an object with required fields agent and task, and optional timeout_ms.");
   }
   // Keep the task literal: validation must not trim, expand, or execute it.
   return {

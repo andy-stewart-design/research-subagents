@@ -52,7 +52,7 @@ Inspect the requested changes.`);
   assert.deepEqual(resolveResearchTimeoutPolicy({ agent: "reviewer", task: "review", timeout_ms: 0 }, 120_000, registry), {
     requestedTimeoutMs: 0, effectiveTimeoutMs: 30_000, timeoutSource: "agent", maxTimeoutMs: 30_000,
   });
-  assert.throws(() => parseResearchInput({ agent: "scout", task: "not registered" }, registry), /Invalid research input/);
+  assert.throws(() => parseResearchInput({ agent: "scout", task: "not registered" }, registry), /Invalid research input|Unknown agent/);
   const config = parseConfig({ profiles: { reviewer: { thinking: "high" } } }, registry);
   assert.equal(config.profiles.reviewer?.thinking, "high");
   assert.deepEqual(selectModel("reviewer", config, {}, loadProfile("reviewer", registry).defaults, registry), {
@@ -168,7 +168,7 @@ test("schema snapshots are deeply immutable and parsing keeps independent regist
   assert.deepEqual(parseResearchInput({ agent: "reviewer", task: "review" }, registry), {
     agent: "reviewer", task: "review",
   });
-  assert.throws(() => parseResearchInput({ agent: "reviewer", task: "review" }), /Invalid research input/);
+  assert.throws(() => parseResearchInput({ agent: "reviewer", task: "review" }), /Invalid research input|Unknown agent/);
 });
 
 test("reserved names are rejected and custom names never inherit bundled fallback tools or config", (t) => {

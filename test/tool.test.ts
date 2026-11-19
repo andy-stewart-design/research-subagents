@@ -78,8 +78,8 @@ test("public research validates raw input before execution and returns only boun
   assert.ok(updates.some((update) => /completed/.test(update.content[0].text)));
 
   const hook = harness.handlers.get("tool_call")!;
-  assert.throws(() => hook({ toolName: "subagent", input: { agent: "scout", task: " " } }), /Invalid research input/);
-  assert.throws(() => harness.tool.prepareArguments({ agent: "researcher", task: "x", tools: ["bash"] }), /Invalid research input/);
+  assert.throws(() => hook({ toolName: "subagent", input: { agent: "scout", task: " " } }), /Invalid research input|Invalid field/);
+  assert.throws(() => harness.tool.prepareArguments({ agent: "researcher", task: "x", tools: ["bash"] }), /Invalid research input|Unexpected field/);
   assert.doesNotThrow(() => hook({ toolName: "mcp__ketch__search", input: {} }));
 });
 

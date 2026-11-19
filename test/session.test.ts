@@ -78,7 +78,7 @@ test("invalid input/paths and an already-cancelled signal never create a runtime
   h.services.createModelRuntime = async () => { throw new Error("must not create runtime"); };
   for (const input of [{ agent: "planner", task: "x" }, { agent: "scout", task: " " }, { agent: "scout", task: "x", cwd: "/" }]) {
     const result = await runResearchSession(input, opts, h.services);
-    assert.equal(result.status, "failed"); assert.match(result.handoff.text, /Invalid research input/);
+    assert.equal(result.status, "failed"); assert.match(result.handoff.text, /Invalid research input|Unknown agent|Invalid field|Unexpected field/);
   }
   const invalidPath = await runResearchSession({ agent: "scout", task: "x" }, { ...opts, cwd: "relative" }, h.services);
   assert.match(invalidPath.handoff.text, /absolute/);

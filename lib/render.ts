@@ -161,10 +161,88 @@ export function renderResearchCall(args: ResearchInput, theme: Theme, context?: 
 }
 
 function resultText(result: AgentToolResult<ResearchToolDetails>): string {
-  return result.content
-    .filter((content): content is { type: "text"; text: string } => content.type === "text")
-    .map((content) => content.text)
+  const content = (result as AgentToolResult<ResearchToolDetails> & { content?: unknown }).content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((entry): entry is { type: "text"; text: string } =>
+      !!entry && typeof entry === "object" && (entry as { type?: unknown }).type === "text" &&
+      typeof (entry as { text?: unknown }).text === "string")
+    .map((entry) => entry.text)
     .join("\n");
+}
+
+const RESEARCH_STATES = new Set<ResearchRunState>([
+  "queued", "running", "completed", "failed", "cancelled", "timed_out",
+]);
+const RESEARCH_PHASES = new Set<ResearchRunPhase>(["preparing_timeout_handoff"]);
+const TIMEOUT_SOURCES = new Set<NonNullable<ResearchToolDetails["timeoutSource"]>>([
+  "agent", "global", "caller", "default",
+]);
+
+function nonnegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function validActivity(value: unknown): value is SessionActivity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const activity = value as Record<string, unknown>;
+  if (!nonnegativeNumber(activity.assistantMessages) || !nonnegativeNumber(activity.toolCalls)) return false;
+  if (activity.latestTool !== undefined && typeof activity.latestTool !== "string") return false;
+  if (activity.omittedToolCalls !== undefined && !nonnegativeNumber(activity.omittedToolCalls)) return false;
+  if (activity.toolHistory === undefined) return true;
+  if (!Array.isArray(activity.toolHistory)) return false;
+  return activity.toolHistory.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const call = entry as Record<string, unknown>;
+    return nonnegativeNumber(call.index) && typeof call.tool === "string" &&
+      (call.summary === undefined || typeof call.summary === "string") &&
+      nonnegativeNumber(call.elapsedMs);
+  });
+}
+
+function validResearchDetails(value: unknown): value is ResearchToolDetails {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const details = value as Record<string, unknown>;
+    if (typeof details.agent !== "string" || typeof details.task !== "string" ||
+      typeof details.status !== "string" || !RESEARCH_STATES.has(details.status as ResearchRunState)) return false;
+    if (details.phase !== undefined && (typeof details.phase !== "string" || !RESEARCH_PHASES.has(details.phase as ResearchRunPhase))) return false;
+    if (details.activity !== undefined && !validActivity(details.activity)) return false;
+    for (const key of ["elapsedMs", "timeoutMs", "requestedTimeoutMs", "effectiveTimeoutMs", "maxTimeoutMs"]) {
+      if (details[key] !== undefined && !nonnegativeNumber(details[key])) return false;
+    }
+    if (details.timeoutSource !== undefined &&
+      (typeof details.timeoutSource !== "string" || !TIMEOUT_SOURCES.has(details.timeoutSource as NonNullable<ResearchToolDetails["timeoutSource"]>))) return false;
+    if (details.model !== undefined && typeof details.model !== "string") return false;
+    if (details.thinkingLevel !== undefined && typeof details.thinkingLevel !== "string") return false;
+    if (details.truncated !== undefined && typeof details.truncated !== "boolean") return false;
+    if (details.reportPath !== undefined && typeof details.reportPath !== "string") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isValidationDiagnostic(diagnostic: string): boolean {
+  const text = diagnostic.trim();
+  return /^Invalid research input:/u.test(text) ||
+    /^Unexpected field(?:s)?: .* Allowed fields: agent, task, timeout_ms\./u.test(text) ||
+    /^(?:Missing|Invalid) field: (?:agent|task|timeout_ms)\./u.test(text) ||
+    /^Unknown agent\. Allowed agents: /u.test(text);
+}
+
+function renderMalformedResult(
+  result: AgentToolResult<ResearchToolDetails>,
+  expanded: boolean,
+  theme: Theme,
+): Component {
+  const diagnostic = createDiagnosticHandoff(resultText(result)).text;
+  if (isValidationDiagnostic(diagnostic)) {
+    return new Text(theme.fg("error", expanded ? diagnostic : "Invalid arguments"), 0, 0);
+  }
+  const firstLine = diagnostic.split("\n")[0] ?? "";
+  const visible = expanded ? diagnostic : previewTask(firstLine);
+  return new Text(theme.fg("error", visible || "Subagent result unavailable."), 0, 0);
 }
 
 export function renderResearchResult(
@@ -174,8 +252,9 @@ export function renderResearchResult(
   _context?: SubagentRenderContext,
 ): Component {
   const details = result.details;
+  const hasValidDetails = validResearchDetails(details);
   if (options.isPartial) {
-    if (!details) return new Text(theme.fg("warning", "running…"), 0, 0);
+    if (!hasValidDetails) return new Text(theme.fg("warning", "running…"), 0, 0);
     let progress = compactStatus({
       state: details.status, phase: details.phase, model: details.model,
       thinkingLevel: details.thinkingLevel, activity: details.activity,
@@ -184,11 +263,7 @@ export function renderResearchResult(
     if (options.expanded && details.activity) progress += renderToolHistory(details.activity, theme);
     return new Text(theme.fg("warning", progress), 0, 0);
   }
-  if (!details) {
-    const diagnostic = createDiagnosticHandoff(resultText(result)).text;
-    const visible = options.expanded ? diagnostic : diagnostic.split("\n")[0] ?? diagnostic;
-    return new Text(theme.fg("error", visible || "Subagent result unavailable."), 0, 0);
-  }
+  if (!hasValidDetails) return renderMalformedResult(result, options.expanded, theme);
 
   const statusColor = details.status === "completed" ? "success"
     : details.status === "cancelled" || details.status === "timed_out" ? "warning" : "error";

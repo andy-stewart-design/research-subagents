@@ -58,8 +58,47 @@ test("bad input, extra fields, unknown agents, and orchestration parameters are 
   ];
   for (const input of invalid) {
     assert.equal(Value.Check(ResearchInputSchema, input), false, JSON.stringify(input));
-    assert.throws(() => parseResearchInput(input), /Invalid research input/);
+    assert.throws(() => parseResearchInput(input), /Invalid research input|Unexpected field|Unexpected fields|Missing field|Invalid field|Unknown agent/);
   }
+});
+
+test("validation diagnostics identify strict argument failures without echoing task data", () => {
+  assert.throws(
+    () => parseResearchInput({ agent: "scout", task: "question", parameters: {} }),
+    (error: unknown) => error instanceof Error && error.message ===
+      "Unexpected field: parameters. Allowed fields: agent, task, timeout_ms.",
+  );
+  assert.throws(
+    () => parseResearchInput({ agent: "scout", task: " ", zeta: true, parameters: {} }),
+    (error: unknown) => error instanceof Error && error.message ===
+      "Unexpected fields: parameters, zeta. Allowed fields: agent, task, timeout_ms. Invalid field: task must be a non-empty, non-whitespace string.",
+  );
+  assert.throws(() => parseResearchInput({ agent: "missing", task: "question" }), /Unknown agent\. Allowed agents: scout, researcher, worker\./);
+  for (const timeout_ms of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, undefined]) {
+    assert.throws(() => parseResearchInput({ agent: "scout", task: "question", timeout_ms }), /Invalid field: timeout_ms/);
+  }
+  const giantTask = "do not echo this ".repeat(10_000);
+  assert.throws(() => parseResearchInput({ agent: "scout", task: giantTask, timeout_ms: -1 }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.length <= 1_024);
+    assert.doesNotMatch(error.message, /do not echo this/);
+    return true;
+  });
+});
+
+test("unknown field diagnostics quote terminal controls as a bounded single line", () => {
+  const field = "bad\n\u001b[31mred\u001b[0m\u007f\u0085\u2028\u2029";
+  assert.throws(
+    () => parseResearchInput({ agent: "scout", task: "question", [field]: true }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message,
+        "Unexpected field: \"bad\\n\\u001b[31mred\\u001b[0m\\u007f\\u0085\\u2028\\u2029\". Allowed fields: agent, task, timeout_ms.");
+      assert.doesNotMatch(error.message, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u);
+      assert.ok(error.message.length <= 1_024);
+      return true;
+    },
+  );
 });
 
 test("tasks remain literal, including whitespace, option-like text, file references and commands", () => {
@@ -177,10 +216,10 @@ body`);
 });
 
 test("agent prompt frontmatter supplies bundled model defaults without leaking into prompt text", () => {
-  assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
-  assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
-  assert.deepEqual(loadProfileDefaults("worker"), { model: "openai-codex/gpt-5.6-luna", thinking: "high" });
-  assert.doesNotMatch(loadProfilePrompt("researcher"), /gpt-5\.6-luna/);
+  assert.deepEqual(loadProfileDefaults("scout"), { model: "openai-codex/gpt-6.1-terra", thinking: "low" });
+  assert.deepEqual(loadProfileDefaults("researcher"), { model: "openai-codex/gpt-6.1-terra", thinking: "low" });
+  assert.deepEqual(loadProfileDefaults("worker"), { model: "openai-codex/gpt-6.1-terra", thinking: "low" });
+  assert.doesNotMatch(loadProfilePrompt("researcher"), /gpt-6\.1-terra/);
 });
 
 test("prompts load from bundled resources, not cwd or local agent files", () => {

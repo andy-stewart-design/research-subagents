@@ -210,6 +210,36 @@ test("setup diagnostics remain visible when a result has no renderer details", (
   assert.match(component.render(40).join("\n"), /Configuration failed/);
 });
 
+test("malformed validation results render explicit arguments diagnostics", () => {
+  const diagnostic = "Unexpected field: parameters. Allowed fields: agent, task, timeout_ms.";
+  const result = { content: [{ type: "text", text: diagnostic }], details: {} } as any;
+  const collapsed = renderResearchResult(result, { expanded: false, isPartial: false }, theme).render(80).join("\n");
+  const expanded = renderResearchResult(result, { expanded: true, isPartial: false }, theme).render(80).join("\n");
+  assert.equal(collapsed.trim(), "Invalid arguments");
+  assert.match(expanded, /Unexpected field: parameters/);
+  assert.doesNotMatch(`${collapsed}\n${expanded}`, /undefined/);
+});
+
+test("escaped unknown-field diagnostics stay one line and classify as invalid arguments", () => {
+  const diagnostic = "Unexpected field: \"bad\\n\\u001b[31mred\\u001b[0m\\u007f\\u0085\\u2028\\u2029\". Allowed fields: agent, task, timeout_ms.";
+  const result = { content: [{ type: "text", text: diagnostic }], details: {} } as any;
+  const collapsed = renderResearchResult(result, { expanded: false, isPartial: false }, theme).render(120).join("\n");
+  const expandedLines = renderResearchResult(result, { expanded: true, isPartial: false }, theme).render(120);
+  assert.equal(collapsed.trim(), "Invalid arguments");
+  assert.equal(expandedLines.length, 1);
+  assert.equal(expandedLines[0]!.trim(), diagnostic);
+  assert.doesNotMatch(expandedLines[0]!, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u);
+});
+
+test("missing or unknown details fall back without mislabeling ordinary failures", () => {
+  for (const details of [undefined, {}, { status: "unknown", agent: "scout", task: "question" }]) {
+    const result = { content: [{ type: "text", text: "Child startup failed." }], details } as any;
+    const collapsed = renderResearchResult(result, { expanded: false, isPartial: false }, theme).render(80).join("\n");
+    assert.match(collapsed, /Child startup failed/);
+    assert.doesNotMatch(collapsed, /Invalid arguments|undefined/);
+  }
+});
+
 test("partial rendering remains useful without a TUI-specific dependency", () => {
   const details: ResearchToolDetails = { status: "running", agent: "scout", task: "question" };
   const component = renderResearchResult({ content: [], details }, { expanded: false, isPartial: true }, theme);
