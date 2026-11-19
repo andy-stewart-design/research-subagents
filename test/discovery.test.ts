@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -196,8 +196,49 @@ test("new definitions fail closed when tools are omitted, and malformed names ar
   writeFileSync(join(root, "reviewer.md"), "---\nmodel: fixture/reviewer\n---\n# Reviewer\nNo tools.");
   assert.deepEqual(discoverProfiles(root).profiles.reviewer?.tools, []);
   writeFileSync(join(root, "bad name.md"), "# Invalid");
-  assert.throws(() => discoverProfiles(root), /Invalid agent filename.*bad name\.md/);
+  assert.throws(() => discoverProfiles(root), { message: `Invalid agent filename "${join(root, "bad name.md")}": use a safe lowercase name such as reviewer.md.` });
   rmSync(join(root, "bad name.md"));
   writeFileSync(join(root, "broken.md"), "---\ntools: [read, mystery]\n---\n# Broken");
   assert.throws(() => discoverProfiles(root), /Invalid agent definition.*broken\.md.*unsupported tool name/);
+});
+
+test("local overlay selects whole files before parsing and produces an isolated immutable snapshot", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "research-overlay-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const shared = join(root, "shared");
+  const local = join(root, "local");
+  mkdirSync(shared);
+  writeFileSync(join(shared, "reviewer.md"), "---\nmodel: fixture/shared\nthinking: high\nmaxTimeout: 42\ntools: [read]\n---\nShared body");
+  assert.deepEqual(discoverProfiles(shared, { localDir: local }).names, ["reviewer"]);
+  mkdirSync(local);
+  writeFileSync(join(local, "reviewer.md"), "Local body");
+  writeFileSync(join(local, "alpha.md"), "Local alpha");
+  const registry = discoverProfiles(shared, { localDir: local });
+  assert.deepEqual(registry.names, ["alpha", "reviewer"]);
+  assert.deepEqual(loadProfile("reviewer", registry).defaults, {});
+  assert.deepEqual(loadProfile("reviewer", registry).tools, []);
+  assert.equal(loadProfile("reviewer", registry).maxTimeout, undefined);
+  assert.equal(loadProfile("reviewer", registry).text, "Local body");
+  assert.ok(Object.isFrozen(registry) && Object.isFrozen(registry.prompts.reviewer) && Object.isFrozen(registry.inputSchema));
+  assert.ok(Value.Check(registry.inputSchema, { agent: "alpha", task: "go" }));
+  assert.equal(parseConfig({ profiles: { alpha: { thinking: "low" } } }, registry).profiles.alpha?.thinking, "low");
+  writeFileSync(join(shared, "reviewer.md"), "---\ntools: [invalid]\n---\nShared");
+  assert.equal(loadProfile("reviewer", discoverProfiles(shared, { localDir: local })).text, "Local body");
+  writeFileSync(join(local, "reviewer.md"), "---\ntools: [invalid]\n---\nLocal");
+  assert.throws(() => discoverProfiles(shared, { localDir: local }), /local\/reviewer\.md.*unsupported tool/);
+  writeFileSync(join(local, "reviewer.md"), "Local body changed");
+  assert.equal(loadProfile("reviewer", registry).text, "Local body");
+  writeFileSync(join(local, "bad name.md"), "bad");
+  assert.throws(() => discoverProfiles(shared, { localDir: local }), { message: `Invalid agent filename "${join(local, "bad name.md")}": use a safe lowercase name such as reviewer.md.` });
+});
+
+test("local overlay supports empty shared directory and bundled omission defaults", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "research-overlay-empty-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const local = join(root, "local");
+  mkdirSync(local);
+  writeFileSync(join(local, "worker.md"), "Local worker");
+  const registry = discoverProfiles(root, { localDir: local });
+  assert.deepEqual(registry.names, ["worker"]);
+  assert.deepEqual(registry.profiles.worker?.tools, ["read", "write", "edit", "bash"]);
 });

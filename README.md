@@ -33,6 +33,8 @@ For the current project instead of personal Pi settings, use `pi install --local
 
 ## Configure subagents
 
+For machine-local agents, add Markdown files to the gitignored sibling `agents.local/` directory. A same-name local file replaces the entire shared definition; other local names are added. Run `/reload` after changes. Omitted tools and descriptions retain historical defaults for bundled names; new names default to no tools.
+
 Profiles are Markdown files in `agents/*.md`. For example, add `agents/reviewer.md`, then run `/reload`:
 
 ```markdown

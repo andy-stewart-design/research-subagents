@@ -18,6 +18,7 @@ const SAFE_PROFILE_NAME = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
 export const MAX_TIMEOUT_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const RESERVED_PROFILE_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const DEFAULT_AGENTS_DIR = fileURLToPath(new URL("../agents/", import.meta.url));
+const DEFAULT_LOCAL_AGENTS_DIR = fileURLToPath(new URL("../agents.local/", import.meta.url));
 
 interface BundledFallback {
   readonly description: string;
@@ -511,25 +512,40 @@ function invalidAgentFilename(name: string): never {
   throw new Error(`Invalid agent filename "${name}": use a safe lowercase name such as reviewer.md.`);
 }
 
-function definitionFiles(agentsDir: string): Dirent[] {
+function definitionFiles(agentsDir: string, optional = false): Dirent[] {
   let entries: Dirent[];
   try { entries = readdirSync(agentsDir, { withFileTypes: true }); }
-  catch (error) { throw new Error(`Unable to discover agents in ${agentsDir}.`, { cause: error }); }
+  catch (error) {
+    if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw new Error(`Unable to discover agents in ${agentsDir}.`, { cause: error });
+  }
   return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !entry.name.startsWith("."))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function discoverProfiles(agentsDir = DEFAULT_AGENTS_DIR): ProfileRegistry {
-  const files = definitionFiles(agentsDir);
+/** A supplied shared directory remains isolated unless a local directory is explicitly provided. */
+export function discoverProfiles(agentsDir?: string, options: { localDir?: string } = {}): ProfileRegistry {
+  const sharedDir = agentsDir ?? DEFAULT_AGENTS_DIR;
+  const localDir = options.localDir ?? (agentsDir === undefined ? DEFAULT_LOCAL_AGENTS_DIR : undefined);
+  const selected = new Map<string, string>();
+  const collect = (directory: string, optional: boolean) => {
+    const seen = new Set<string>();
+    for (const file of definitionFiles(directory, optional)) {
+      if (file.name === "README.md") continue;
+      const name = file.name.slice(0, -3);
+      if (!SAFE_PROFILE_NAME.test(name) || RESERVED_PROFILE_NAMES.has(name)) invalidAgentFilename(join(directory, file.name));
+      if (seen.has(name)) throw new Error(`Duplicate agent definition for "${name}" in ${directory}.`);
+      seen.add(name);
+      selected.set(name, join(directory, file.name));
+    }
+  };
+  collect(sharedDir, false);
+  if (localDir !== undefined) collect(localDir, true);
   const profiles: Record<string, Profile> = Object.create(null) as Record<string, Profile>;
   const prompts: Record<string, ProfilePrompt> = Object.create(null) as Record<string, ProfilePrompt>;
   const names: string[] = [];
-  for (const file of files) {
-    if (file.name === "README.md") continue;
-    const name = file.name.slice(0, -3);
-    if (!SAFE_PROFILE_NAME.test(name) || RESERVED_PROFILE_NAMES.has(name)) invalidAgentFilename(file.name);
-    if (Object.hasOwn(profiles, name)) throw new Error(`Duplicate agent definition for "${name}" in ${agentsDir}.`);
-    const path = join(agentsDir, file.name);
+  // Select whole files before parsing: a shadowed shared definition cannot invalidate its replacement.
+  for (const [name, path] of selected) {
     let source: string;
     try { source = readFileSync(path, "utf8"); }
     catch (error) { throw new Error(`Unable to read agent definition ${path}.`, { cause: error }); }
@@ -546,7 +562,7 @@ export function discoverProfiles(agentsDir = DEFAULT_AGENTS_DIR): ProfileRegistr
     prompts[name] = Object.freeze({ ...prompt, description });
     names.push(name);
   }
-  if (!names.length) throw new Error(`No agent definitions found in ${agentsDir}.`);
+  if (!names.length) throw new Error(`No agent definitions found in ${sharedDir}.`);
   names.sort((left, right) => {
     const leftIndex = Object.keys(BUNDLED_FALLBACKS).indexOf(left);
     const rightIndex = Object.keys(BUNDLED_FALLBACKS).indexOf(right);
