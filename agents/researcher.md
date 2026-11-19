@@ -1,6 +1,6 @@
 ---
-model: openai-codex/gpt-5.6-luna
-thinking: high
+model: openai-codex/gpt-6.1-terra
+thinking: low
 tools:
   [mcp__ketch__search, mcp__ketch__scrape, mcp__ketch__code, mcp__ketch__docs]
 maxTimeout: 900

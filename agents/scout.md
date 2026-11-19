@@ -1,6 +1,6 @@
 ---
-model: openai-codex/gpt-5.6-luna
-thinking: high
+model: openai-codex/gpt-6.1-terra
+thinking: low
 tools: [read, grep, find, ls]
 maxTimeout: 900
 ---
